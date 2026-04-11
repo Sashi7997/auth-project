@@ -12,7 +12,8 @@ const Login: React.FC<Props> = ({ setEmail }) => {
 
   const handleLogin = async () => {
     try {
-      const res = await axios.post("http://localhost:5000/auth/login", {
+      const apiBase = process.env.REACT_APP_API_URL || "http://localhost:5000";
+      const res = await axios.post(`${apiBase}/auth/login`, {
         email,
         password,
       });

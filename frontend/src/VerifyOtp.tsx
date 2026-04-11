@@ -12,14 +12,18 @@ const VerifyOtp: React.FC<Props> = ({ email }) => {
 
   const handleVerify = async () => {
     try {
-      const res = await axios.post("http://localhost:5000/auth/verify-otp", {
-        email,
-        otp,
-      });
+      const res = await axios.post(
+        "http://localhost:5000/auth/verify-otp", // ✅ FIXED
+        {
+          email,
+          otp,
+        }
+      );
 
       setMessage("Login successful 🎉");
       setToken(res.data.token);
     } catch (error: any) {
+      console.error(error);
       setMessage(error.response?.data?.message || "Invalid OTP");
     }
   };

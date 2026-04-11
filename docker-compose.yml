@@ -11,6 +11,8 @@ services:
       POSTGRES_DB: authdb
     ports:
       - "5432:5432"
+    volumes:
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
 
   backend:
     build: ./backend
@@ -32,3 +34,8 @@ services:
       - "3000:3000"
     depends_on:
       - backend
+    environment:
+      # The frontend dev server runs in a container but the browser
+      # runs on the host. Use the host's localhost to reach backend
+      # forwarded on port 5000.
+      - REACT_APP_API_URL=http://localhost:5000
