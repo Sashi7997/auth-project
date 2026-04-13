@@ -1,22 +1,22 @@
 
 
-# 📦 Auth System with MFA (Dockerized Full Stack)
+#  Auth System with MFA (Dockerized Full Stack)
 
 A full-stack authentication application with **Multi-Factor Authentication (OTP)** built using a modern containerized architecture.
 
 ---
 
-## 🚀 Features
+##  Features
 
-* 🔐 User Registration & Login
-* 📲 OTP-based Multi-Factor Authentication
-* 🗄️ PostgreSQL Database
-* 🐳 Dockerized (Frontend + Backend + DB)
-* ⚡ One-command setup using Docker Compose
+*  User Registration & Login
+*  OTP-based Multi-Factor Authentication
+*  PostgreSQL Database
+*  Dockerized (Frontend + Backend + DB)
+*  One-command setup using Docker Compose
 
 ---
 
-## 🏗️ Project Structure
+##  Project Structure
 
 ```
 auth-project/
@@ -31,7 +31,7 @@ auth-project/
 
 ---
 
-## ⚙️ Prerequisites
+##  Prerequisites
 
 Make sure you have installed:
 
@@ -40,9 +40,9 @@ Make sure you have installed:
 
 ---
 
-## 🐳 Docker Setup
+##  Docker Setup
 
-### 🔧 Build & Run the Project
+###  Build & Run the Project
 
 ```bash
 docker-compose up --build
@@ -56,7 +56,7 @@ This command will:
 
 ---
 
-### 🛑 Stop Containers
+###  Stop Containers
 
 ```bash
 docker-compose down
@@ -64,7 +64,7 @@ docker-compose down
 
 ---
 
-### 🔄 Rebuild Containers
+###  Rebuild Containers
 
 ```bash
 docker-compose up --build
@@ -72,7 +72,7 @@ docker-compose up --build
 
 ---
 
-### 📜 View Logs
+###  View Logs
 
 ```bash
 docker-compose logs -f
@@ -80,9 +80,9 @@ docker-compose logs -f
 
 ---
 
-## 📦 Services
+##  Services
 
-### 🗄️ PostgreSQL
+###  PostgreSQL
 
 * Port: `5432`
 * Database: `authdb`
@@ -92,7 +92,7 @@ docker-compose logs -f
 
 ---
 
-### 🧠 Backend
+###  Backend
 
 * URL: `http://localhost:5000`
 * Handles authentication & OTP logic
@@ -108,7 +108,7 @@ DB_NAME=authdb
 
 ---
 
-### 🎨 Frontend
+###  Frontend
 
 * URL: `http://localhost:3000`
 * Communicates with backend API
@@ -121,7 +121,7 @@ REACT_APP_API_URL=http://localhost:5000
 
 ---
 
-## ▶️ Running the App
+##  Running the App
 
 After starting Docker:
 
@@ -129,9 +129,9 @@ After starting Docker:
 
 ---
 
-## 🔄 Application Flow
+##  Application Flow
 
-### 🧑‍💻 Authentication Flow
+###  Authentication Flow
 
 1. **Register**
 
@@ -153,7 +153,7 @@ After starting Docker:
 
 ---
 
-## 🔗 Flow Overview
+##  Flow Overview
 
 ```
 Frontend → Backend → Database
@@ -162,7 +162,7 @@ Frontend → Backend → Database
 
 ---
 
-## 🧪 Development Notes
+##  Development Notes
 
 * Backend connects to DB using Docker network
 * DB initializes automatically on startup
