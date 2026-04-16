@@ -1,41 +1,39 @@
-version: "3.8"
-
 services:
   db:
     image: postgres:15
     container_name: postgres_db
     restart: always
     environment:
-      POSTGRES_USER: user
-      POSTGRES_PASSWORD: pass
-      POSTGRES_DB: authdb
+      POSTGRES_USER: trainer
+      POSTGRES_PASSWORD: securepassword
+      POSTGRES_DB: training_tracker
     ports:
       - "5432:5432"
     volumes:
-      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - pgdata:/var/lib/postgresql/data
 
   backend:
     build: ./backend
-    container_name: backend_app
+    container_name: training_tracker_backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://trainer:securepassword@db:5432/training_tracker
+      JWT_SECRET: change-me-in-production
     ports:
       - "5000:5000"
     depends_on:
       - db
-    environment:
-      DB_HOST: db
-      DB_USER: user
-      DB_PASSWORD: pass
-      DB_NAME: authdb
 
   frontend:
     build: ./frontend
-    container_name: frontend_app
+    container_name: training_tracker_frontend
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:5000
     ports:
       - "3000:3000"
     depends_on:
       - backend
-    environment:
-      # The frontend dev server runs in a container but the browser
-      # runs on the host. Use the host's localhost to reach backend
-      # forwarded on port 5000.
-      - REACT_APP_API_URL=http://localhost:5000
+
+volumes:
+  pgdata:

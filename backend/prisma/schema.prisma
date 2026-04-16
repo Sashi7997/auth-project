@@ -1,0 +1,136 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                Int             @id @default(autoincrement())
+  name              String?
+  email             String          @unique
+  passwordHash      String          @map("password")
+  mfaSecret         String?         @map("mfa_secret")
+  role              Role            @default(JUNIOR_DEV)
+  department        String?
+  photoUrl          String?         @map("photo_url")
+  githubUrl         String?         @map("github_url")
+  linkedinUrl       String?         @map("linkedin_url")
+  skills            String[]        @default([])
+  trainingStatus    TrainingStatus  @default(NOT_STARTED) @map("training_status")
+  trainingStartDate DateTime?       @map("training_start_date")
+  trainingEndDate   DateTime?       @map("training_end_date")
+  joinDate          DateTime        @default(now()) @map("join_date")
+  internalNotes     String?         @map("internal_notes")
+  inviteToken       String?         @unique @map("invite_token")
+  inviteExpiresAt   DateTime?       @map("invite_expires_at")
+  createdAt         DateTime        @default(now()) @map("created_at")
+  updatedAt         DateTime        @updatedAt @map("updated_at")
+
+  tasks             Task[]          @relation("AssignedTo")
+  assignedTasks     Task[]          @relation("AssignedBy")
+  feedbackReceived  Feedback[]      @relation("FeedbackFor")
+  feedbackGiven     Feedback[]      @relation("FeedbackBy")
+  notifications     Notification[]
+  auditLogs         AuditLog[]      @relation("AuditActor")
+
+  @@map("users")
+}
+
+model Task {
+  id           String     @id @default(uuid())
+  title        String
+  description  String     @default("")
+  priority     Priority   @default(MEDIUM)
+  status       TaskStatus @default(ASSIGNED)
+  dueDate      DateTime?  @map("due_date")
+  attachments  String[]   @default([])
+  assignedToId Int        @map("assigned_to")
+  assignedById Int?       @map("assigned_by")
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+
+  assignedTo   User       @relation("AssignedTo", fields: [assignedToId], references: [id], onDelete: Cascade)
+  assignedBy   User?      @relation("AssignedBy", fields: [assignedById], references: [id], onDelete: SetNull)
+
+  @@map("tasks")
+}
+
+model Feedback {
+  id          String       @id @default(uuid())
+  content     String
+  type        FeedbackType
+  developerId Int         @map("developer_id")
+  authorId    Int?        @map("author_id")
+  createdAt   DateTime     @default(now()) @map("created_at")
+  updatedAt   DateTime     @updatedAt @map("updated_at")
+
+  developer   User         @relation("FeedbackFor", fields: [developerId], references: [id], onDelete: Cascade)
+  author      User?        @relation("FeedbackBy", fields: [authorId], references: [id], onDelete: SetNull)
+
+  @@map("feedback")
+}
+
+model Notification {
+  id        String    @id @default(uuid())
+  userId    Int       @map("user_id")
+  message   String
+  readAt    DateTime? @map("read_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notifications")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorId    Int?     @map("actor_id")
+  action     String
+  entityType String   @map("entity_type")
+  entityId   String?  @map("entity_id")
+  details    Json     @default("{}")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  actor      User?    @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@map("audit_logs")
+}
+
+enum Role {
+  JUNIOR_DEV
+  SENIOR_DEV
+  TEAM_LEAD
+  HR
+}
+
+enum TrainingStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  ON_HOLD
+  COMPLETED
+  FAILED
+}
+
+enum TaskStatus {
+  ASSIGNED
+  IN_PROGRESS
+  SUBMITTED
+  REVIEWED
+  NEEDS_REVISION
+  COMPLETED
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum FeedbackType {
+  EXTERNAL
+  INTERNAL
+}
