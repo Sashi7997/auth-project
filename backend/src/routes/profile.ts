@@ -123,9 +123,12 @@ router.patch("/:id", authenticate, async (req: Request, res: Response) => {
     const profileId = Number(req.params.id);
     const {
       department,
+      githubUrl,
       internalNotes,
       joinDate,
+      linkedinUrl,
       name,
+      photoUrl,
       skills,
       trainingEndDate,
       trainingStartDate,
@@ -140,9 +143,12 @@ router.patch("/:id", authenticate, async (req: Request, res: Response) => {
     await prisma.user.update({
       data: {
         department,
+        githubUrl,
         internalNotes: canManageProfiles(requester.role) ? internalNotes : undefined,
         joinDate: joinDate ? new Date(joinDate) : undefined,
+        linkedinUrl,
         name,
+        photoUrl,
         skills: Array.isArray(skills) ? skills : undefined,
         trainingEndDate: trainingEndDate ? new Date(trainingEndDate) : undefined,
         trainingStartDate: trainingStartDate ? new Date(trainingStartDate) : undefined,
@@ -152,7 +158,7 @@ router.patch("/:id", authenticate, async (req: Request, res: Response) => {
     });
 
     await createAuditLog(Number(requester.userId), "PROFILE_UPDATED", "users", String(profileId), {
-      fields: ["department", "internalNotes", "joinDate", "name", "skills", "trainingDates", "trainingStatus"],
+      fields: ["department", "githubUrl", "internalNotes", "joinDate", "linkedinUrl", "name", "photoUrl", "skills", "trainingDates", "trainingStatus"],
     });
 
     res.json({ message: "Profile updated" });

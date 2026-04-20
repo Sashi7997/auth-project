@@ -59,8 +59,11 @@ router.post("/register", async (req: Request, res: Response) => {
 router.post("/invite", authenticate, requireRole("HR"), async (req: Request, res: Response) => {
   try {
     const { email, role = "JUNIOR_DEV", name = "", department = "" } = req.body;
+    const normalizedEmail = String(email || "").trim().toLowerCase();
+    const normalizedName = String(name || "").trim();
+    const normalizedDepartment = String(department || "").trim();
 
-    if (!email) {
+    if (!normalizedEmail) {
       res.status(400).json({ message: "Email is required" });
       return;
     }
@@ -70,7 +73,7 @@ router.post("/invite", authenticate, requireRole("HR"), async (req: Request, res
     const temporaryPassword = await bcrypt.hash(crypto.randomBytes(16).toString("hex"), 10);
     const secret = speakeasy.generateSecret();
     const existingUser = await prisma.user.findUnique({
-      where: { email },
+      where: { email: normalizedEmail },
     });
 
     let user;
@@ -87,11 +90,11 @@ router.post("/invite", authenticate, requireRole("HR"), async (req: Request, res
       user = await prisma.user.update({
         where: { id: existingUser.id },
         data: {
-          department,
+          department: normalizedDepartment,
           inviteExpiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
           inviteToken,
           mfaSecret: secret.base32,
-          name,
+          name: normalizedName,
           passwordHash: temporaryPassword,
           role: userRole,
         },
@@ -100,12 +103,12 @@ router.post("/invite", authenticate, requireRole("HR"), async (req: Request, res
     } else {
       user = await prisma.user.create({
         data: {
-          department,
-          email,
+          department: normalizedDepartment,
+          email: normalizedEmail,
           inviteExpiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
           inviteToken,
           mfaSecret: secret.base32,
-          name,
+          name: normalizedName,
           passwordHash: temporaryPassword,
           role: userRole,
         },
@@ -113,7 +116,7 @@ router.post("/invite", authenticate, requireRole("HR"), async (req: Request, res
     }
 
     await createAuditLog(Number((req as any).user.userId), "USER_INVITED", "users", String(user.id), {
-      email,
+      email: normalizedEmail,
       inviteMode,
       role: userRole,
     });
@@ -123,7 +126,7 @@ router.post("/invite", authenticate, requireRole("HR"), async (req: Request, res
     let emailError: string | undefined;
 
     try {
-      emailSent = await sendInviteEmail(email, inviteLink);
+      emailSent = await sendInviteEmail(normalizedEmail, inviteLink);
     } catch (error: any) {
       emailSent = false;
       emailError = error?.message || "Invite email failed to send";
@@ -141,6 +144,40 @@ router.post("/invite", authenticate, requireRole("HR"), async (req: Request, res
   } catch (error: any) {
     console.error(error);
     res.status(500).json({ message: "Error creating invite" });
+  }
+});
+
+router.get("/invite-preview", async (req: Request, res: Response) => {
+  try {
+    const token = String(req.query.token || "");
+
+    if (!token) {
+      res.status(400).json({ message: "Invite token is required" });
+      return;
+    }
+
+    const user = await prisma.user.findFirst({
+      where: {
+        inviteExpiresAt: { gt: new Date() },
+        inviteToken: token,
+      },
+      select: {
+        department: true,
+        email: true,
+        name: true,
+        role: true,
+      },
+    });
+
+    if (!user) {
+      res.status(404).json({ message: "Invalid or expired invite" });
+      return;
+    }
+
+    res.json({ invite: user });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Error fetching invite details" });
   }
 });
 
@@ -288,7 +325,7 @@ router.get("/me", authenticate, async (req: Request, res: Response) => {
   }
 });
 
-router.get("/users", authenticate, requireRole("HR"), async (_req: Request, res: Response) => {
+router.get("/users", authenticate, requireRole("HR", "TEAM_LEAD"), async (_req: Request, res: Response) => {
   try {
     const users = await prisma.user.findMany({
       orderBy: { email: "asc" },
@@ -335,6 +372,63 @@ router.patch("/users/:id/role", authenticate, requireRole("HR"), async (req: Req
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Error updating role" });
+  }
+});
+
+router.delete("/users/:id", authenticate, requireRole("HR", "TEAM_LEAD"), async (req: Request, res: Response) => {
+  try {
+    const requester = (req as any).user;
+    const userId = Number(req.params.id);
+
+    if (!userId) {
+      res.status(400).json({ message: "Invalid user id" });
+      return;
+    }
+
+    if (Number(requester.userId) === userId) {
+      res.status(400).json({ message: "You cannot delete your own account while signed in." });
+      return;
+    }
+
+    const existingUser = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { email: true, id: true, role: true },
+    });
+
+    if (!existingUser) {
+      res.status(404).json({ message: "User not found" });
+      return;
+    }
+
+    await prisma.$transaction([
+      prisma.auditLog.deleteMany({
+        where: {
+          OR: [{ actorId: userId }, { entityType: "users", entityId: String(userId) }],
+        },
+      }),
+      prisma.notification.deleteMany({ where: { userId } }),
+      prisma.feedback.deleteMany({
+        where: {
+          OR: [{ authorId: userId }, { developerId: userId }],
+        },
+      }),
+      prisma.task.deleteMany({
+        where: {
+          OR: [{ assignedById: userId }, { assignedToId: userId }],
+        },
+      }),
+      prisma.user.delete({ where: { id: userId } }),
+    ]);
+
+    await createAuditLog(Number(requester.userId), "USER_DELETED", "users", String(userId), {
+      deletedEmail: existingUser.email,
+      deletedRole: existingUser.role,
+    });
+
+    res.json({ message: "User deleted successfully" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Error deleting user" });
   }
 });
 

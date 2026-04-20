@@ -19,6 +19,13 @@ services:
     environment:
       DATABASE_URL: postgresql://trainer:securepassword@db:5432/training_tracker
       JWT_SECRET: change-me-in-production
+      FRONTEND_URL: http://localhost:3000
+      SMTP_HOST: smtp.gmail.com
+      SMTP_PORT: 587
+      SMTP_SECURE: "false"
+      SMTP_USER: sashireddy7997@gmail.com
+      SMTP_PASS: jgmseoyjlngingyn
+      SMTP_FROM: Training Tracker <sashireddy7997@gmail.com>
     ports:
       - "5000:5000"
     depends_on:

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import api from "@/lib/api";
 
 type Role = "JUNIOR_DEV" | "SENIOR_DEV" | "TEAM_LEAD" | "HR";
-type Page = "dashboard" | "profile" | "tasks" | "feedback" | "notifications" | "users" | "audit";
+type Page = "home" | "dashboard" | "profile" | "tasks" | "feedback" | "notifications" | "users" | "audit";
 type TaskStatus = "ASSIGNED" | "IN_PROGRESS" | "SUBMITTED" | "REVIEWED" | "NEEDS_REVISION" | "COMPLETED";
 type FeedbackType = "EXTERNAL" | "INTERNAL";
 
@@ -56,7 +56,17 @@ type AuditLog = {
   action: string;
   entityType: string;
   entityId?: string;
+  actorId?: number;
+  details?: Record<string, any> | null;
+  metadata?: Record<string, any> | null;
   createdAt?: string;
+};
+
+type InvitePreview = {
+  email: string;
+  role: Role;
+  name?: string;
+  department?: string;
 };
 
 const roles: Role[] = ["JUNIOR_DEV", "SENIOR_DEV", "TEAM_LEAD", "HR"];
@@ -93,14 +103,17 @@ const getTaskStatusOptions = (currentStatus: TaskStatus, role: Role): TaskStatus
 };
 
 export default function Home() {
-  const [page, setPage] = useState<Page>("dashboard");
-  const [authMode, setAuthMode] = useState<"login" | "register" | "setup">("login");
+  const [page, setPage] = useState<Page>("home");
+  const [navMenuOpen, setNavMenuOpen] = useState(false);
+  const [authMode, setAuthMode] = useState<"home" | "login" | "register" | "setup">("home");
   const [step, setStep] = useState<"password" | "otp">("password");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [registerRole, setRegisterRole] = useState<Role>("JUNIOR_DEV");
   const [otp, setOtp] = useState("");
   const [setupToken, setSetupToken] = useState("");
+  const [invitePreview, setInvitePreview] = useState<InvitePreview | null>(null);
+  const [setupComplete, setSetupComplete] = useState(false);
   const [qrCode, setQrCode] = useState("");
   const [message, setMessage] = useState("");
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -109,6 +122,12 @@ export default function Home() {
   const [feedback, setFeedback] = useState<Feedback[]>([]);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [dashboardTasks, setDashboardTasks] = useState<TrainingTask[]>([]);
+  const [dashboardStats, setDashboardStats] = useState({
+    overdueTasks: 0,
+    pendingReview: 0,
+    progress: 0,
+  });
   const [dashboardFilters, setDashboardFilters] = useState({
     department: "ALL",
     role: "ALL",
@@ -142,21 +161,42 @@ export default function Home() {
   const [inviteForm, setInviteForm] = useState({ department: "", email: "", name: "", role: "JUNIOR_DEV" as Role });
   const [inviteLink, setInviteLink] = useState("");
   const [sessionExpired, setSessionExpired] = useState(false);
+  const [previousPage, setPreviousPage] = useState<Page | null>(null);
 
-  const switchAuthMode = (mode: "login" | "register") => {
+  const switchAuthMode = (mode: "home" | "login" | "register") => {
     setAuthMode(mode);
     setStep("password");
     setQrCode("");
+    setSetupComplete(false);
     setMessage("");
     setSessionExpired(false);
+  };
+
+  const navigateToPage = (nextPage: Page) => {
+    if (page !== nextPage) {
+      setPreviousPage(page);
+    }
+    setPage(nextPage);
+    setNavMenuOpen(false);
+  };
+
+  const goBack = () => {
+    if (previousPage) {
+      const target = previousPage;
+      setPreviousPage(page);
+      setPage(target);
+      setNavMenuOpen(false);
+      return;
+    }
+
+    setPage("dashboard");
+    setNavMenuOpen(false);
   };
 
   const isLeadOrHr = profile?.role === "HR" || profile?.role === "TEAM_LEAD";
   const isHr = profile?.role === "HR";
   const canCreateExternalFeedback = profile ? canAddExternalFeedback(profile.role) : false;
   const canCreateInternalFeedback = profile ? canAddInternalFeedback(profile.role) : false;
-  const completeTasks = tasks.filter((task) => task.status === "COMPLETED").length;
-  const progress = tasks.length ? Math.round((completeTasks / tasks.length) * 100) : 0;
   const unread = notifications.filter((item) => !item.readAt).length;
   const filteredProfiles = profiles.filter((item) => {
     const statusMatch = dashboardFilters.status === "ALL" || item.trainingStatus === dashboardFilters.status;
@@ -236,11 +276,27 @@ export default function Home() {
     setSelectedProfileId(userId);
   };
 
-  const loadData = async () => {
+  const buildDashboardStats = (items: TrainingTask[]) => {
+    setDashboardTasks(items);
+    const completed = items.filter((task) => task.status === "COMPLETED").length;
+    const pendingReview = items.filter((task) => task.status === "SUBMITTED").length;
+    const overdueTasks = items.filter((task) => task.dueDate && new Date(task.dueDate) < new Date() && task.status !== "COMPLETED").length;
+
+    setDashboardStats({
+      overdueTasks,
+      pendingReview,
+      progress: items.length ? Math.round((completed / items.length) * 100) : 0,
+    });
+  };
+
+  const loadData = async (options?: { resetToHome?: boolean }) => {
     try {
       const profileResponse = await api.get<Profile>("/profile");
       const current = profileResponse.data;
       setProfile(current);
+      if (options?.resetToHome) {
+        setPage("home");
+      }
       setSessionExpired(false);
       syncProfileForm(current);
       setSelectedProfileId(current.id);
@@ -257,12 +313,20 @@ export default function Home() {
       setFeedback(feedbackResponse.data);
       setSelectedTaskUserId(current.id);
       setSelectedFeedbackUserId(current.id);
+      buildDashboardStats(taskResponse.data);
 
       if (current.role === "HR" || current.role === "TEAM_LEAD") {
-        const profileList = await api.get<Profile[]>("/profile/all");
-        const auditResponse = await api.get<AuditLog[]>("/audit");
+        const [profileList, auditResponse] = await Promise.all([
+          api.get<Profile[]>("/profile/all"),
+          api.get<AuditLog[]>("/audit"),
+        ]);
         setProfiles(profileList.data);
         setAuditLogs(auditResponse.data);
+
+        const teamTaskResponses = await Promise.all(
+          profileList.data.map((item) => api.get<TrainingTask[]>(`/tasks/${item.id}`))
+        );
+        buildDashboardStats(teamTaskResponses.flatMap((response) => response.data));
       } else {
         setProfiles([current]);
         setAuditLogs([]);
@@ -278,14 +342,68 @@ export default function Home() {
     if (token) {
       setSetupToken(token);
       setAuthMode("setup");
+      api
+        .get<{ invite: InvitePreview }>(`/auth/invite-preview?token=${encodeURIComponent(token)}`)
+        .then((response) => setInvitePreview(response.data.invite))
+        .catch(() => setMessage("This invite link is invalid or has expired."));
       return;
     }
 
     api
       .get<{ user: Profile }>("/auth/me")
-      .then(() => loadData())
+      .then(() => loadData({ resetToHome: true }))
       .catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    if (!invitePreview) {
+      return;
+    }
+
+    setProfileForm((value) => ({
+      ...value,
+      name: value.name || invitePreview.name || "",
+    }));
+  }, [invitePreview]);
+
+  useEffect(() => {
+    if (!message || sessionExpired) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setMessage("");
+    }, 3200);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [message, sessionExpired]);
+
+  useEffect(() => {
+    if (!profile) {
+      return;
+    }
+
+    const handleHomeClick = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      const button = target?.closest("button");
+
+      if (!button || !button.closest(".nav-compact") || button.textContent?.trim() !== "Home") {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      setPreviousPage(page);
+      setPage("home");
+      setNavMenuOpen(false);
+    };
+
+    document.addEventListener("click", handleHomeClick, true);
+
+    return () => {
+      document.removeEventListener("click", handleHomeClick, true);
+    };
+  }, [page, profile]);
 
   useEffect(() => {
     if (!profile) {
@@ -361,8 +479,8 @@ export default function Home() {
         token: setupToken,
       });
       setQrCode(response.data.qrCode);
-      setMessage("Profile setup complete. Scan the QR code, then log in.");
-      setAuthMode("login");
+      setSetupComplete(true);
+      setMessage("Profile setup complete. Scan the QR code in your authenticator app, then continue to login.");
     } catch (error: any) {
       await handleRequestError(error, "Profile setup failed.");
     }
@@ -484,6 +602,31 @@ export default function Home() {
     }
   };
 
+  const deleteUser = async (userId: number, userLabel: string) => {
+    const confirmed = window.confirm(`Delete ${userLabel}'s account? This will remove their tasks, feedback, notifications, and profile data.`);
+
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      await api.delete(`/auth/users/${userId}`);
+      setMessage("User deleted.");
+      if (selectedProfileId === userId) {
+        setSelectedProfileId(profile?.id ?? null);
+      }
+      if (selectedTaskUserId === userId) {
+        setSelectedTaskUserId(profile?.id ?? null);
+      }
+      if (selectedFeedbackUserId === userId) {
+        setSelectedFeedbackUserId(profile?.id ?? null);
+      }
+      await loadData();
+    } catch (error: any) {
+      await handleRequestError(error, "Unable to delete that user right now.");
+    }
+  };
+
   const markRead = async (id: string) => {
     try {
       await api.patch(`/notifications/${id}/read`);
@@ -548,10 +691,63 @@ export default function Home() {
   };
 
   const logout = async () => {
+    setNavMenuOpen(false);
     await resetSession("Logged out.");
   };
 
   if (!profile) {
+    if (authMode === "home") {
+      return (
+        <main className="auth-panel auth-home-panel">
+          <section className="landing-shell">
+            <div className="landing-visual">
+              <img src="https://images.unsplash.com/photo-1552664730-d307ca884978?auto=format&fit=crop&w=1600&q=80" alt="Team workshop" />
+              <div className="landing-visual-copy">
+                <p className="eyebrow">Training Tracker</p>
+                <h1>Build every training journey in one place.</h1>
+                <p>
+                  Assign work, collect layered feedback, review submissions, and keep HR and Team Leads aligned from a single workspace.
+                </p>
+              </div>
+            </div>
+
+            <section className="landing-content">
+              <div className="stack" style={{ gap: 12 }}>
+                <p className="eyebrow">Welcome</p>
+                <h2>Start here</h2>
+                <p className="hero-note">
+                  Sign in to continue, register a new account, or complete an invite-based setup from the secure link sent by HR.
+                </p>
+              </div>
+
+              <div className="landing-feature-grid">
+                <article className="landing-feature-card">
+                  <strong>Profiles</strong>
+                  <h3>Role-aware records</h3>
+                  <p>Profiles, training dates, links, and private notes stay organized and visible to the right people.</p>
+                </article>
+                <article className="landing-feature-card">
+                  <strong>Review Flow</strong>
+                  <h3>Submission review</h3>
+                  <p>Tasks move from assignment to review with notifications and reviewer actions built in.</p>
+                </article>
+                <article className="landing-feature-card">
+                  <strong>Visibility</strong>
+                  <h3>Structured feedback</h3>
+                  <p>External and internal notes stay separated cleanly so the right people see the right context.</p>
+                </article>
+              </div>
+
+              <div className="landing-actions">
+                <button onClick={() => switchAuthMode("login")}>Login</button>
+                <button className="secondary" onClick={() => switchAuthMode("register")}>Register</button>
+              </div>
+            </section>
+          </section>
+        </main>
+      );
+    }
+
     return (
       <main className="auth-panel">
         <section className="auth-art">
@@ -562,6 +758,10 @@ export default function Home() {
           </div>
         </section>
         <section className="auth-card stack">
+          <div className="row auth-top-actions">
+            <button className="secondary" onClick={() => switchAuthMode("home")}>Home</button>
+            <button className="secondary" onClick={() => switchAuthMode("home")}>Back</button>
+          </div>
           <h2>{authMode === "setup" ? "Complete Invite" : authMode === "register" ? "Create Account" : "Sign In"}</h2>
           {message && <p className="message">{message}</p>}
           {sessionExpired && !message && <p className="message">Sign in again to continue.</p>}
@@ -581,12 +781,45 @@ export default function Home() {
           )}
           {authMode === "setup" ? (
             <>
+              {invitePreview && (
+                <div className="card stack">
+                  <div>
+                    <p className="eyebrow">Invite Details</p>
+                    <h3 style={{ margin: "8px 0 0" }}>{invitePreview.name || invitePreview.email}</h3>
+                  </div>
+                  <div className="detail-list compact">
+                    <div>
+                      <span>Email</span>
+                      <strong>{invitePreview.email}</strong>
+                    </div>
+                    <div>
+                      <span>Role</span>
+                      <strong>{invitePreview.role}</strong>
+                    </div>
+                    <div>
+                      <span>Department</span>
+                      <strong>{invitePreview.department || "Not assigned"}</strong>
+                    </div>
+                  </div>
+                </div>
+              )}
               <label>Full Name<input value={profileForm.name} onChange={(event) => setProfileForm({ ...profileForm, name: event.target.value })} /></label>
               <label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
               <label>Skills<input value={profileForm.skills} onChange={(event) => setProfileForm({ ...profileForm, skills: event.target.value })} /></label>
               <label>GitHub URL<input value={profileForm.githubUrl} onChange={(event) => setProfileForm({ ...profileForm, githubUrl: event.target.value })} /></label>
               <label>LinkedIn URL<input value={profileForm.linkedinUrl} onChange={(event) => setProfileForm({ ...profileForm, linkedinUrl: event.target.value })} /></label>
               <button onClick={setupProfile}>Finish Setup</button>
+              {qrCode && (
+                <div className="card stack">
+                  <div>
+                    <p className="eyebrow">Authenticator Setup</p>
+                    <h3 style={{ margin: "8px 0 0" }}>Scan this QR code</h3>
+                  </div>
+                  <p style={{ margin: 0 }}>Use Google Authenticator or any compatible authenticator app, then return here and go to login.</p>
+                  <img src={qrCode} alt="Authenticator QR code" style={{ maxWidth: 220 }} />
+                  <button className="secondary" onClick={() => switchAuthMode("login")}>Go To Login</button>
+                </div>
+              )}
             </>
           ) : step === "otp" ? (
             <>
@@ -612,7 +845,7 @@ export default function Home() {
               <button onClick={authMode === "register" ? register : login}>{authMode === "register" ? "Register" : "Continue"}</button>
             </>
           )}
-          {qrCode && authMode !== "login" && <img src={qrCode} alt="Authenticator QR code" style={{ maxWidth: 220 }} />}
+          {qrCode && authMode !== "login" && !setupComplete && <img src={qrCode} alt="Authenticator QR code" style={{ maxWidth: 220 }} />}
         </section>
       </main>
     );
@@ -628,44 +861,175 @@ export default function Home() {
             <div>{profile.name || profile.email} · {profile.role}</div>
           </div>
         </div>
-        <nav className="nav">
-          {(["dashboard", "profile", "tasks", "feedback", "notifications"] as Page[]).map((item) => (
-            <button key={item} className={page === item ? "active" : ""} onClick={() => setPage(item)}>
-              {item === "notifications" ? `Notifications${unread ? ` (${unread})` : ""}` : item.charAt(0).toUpperCase() + item.slice(1)}
-            </button>
-          ))}
-          {isHr && <button className={page === "users" ? "active" : ""} onClick={() => setPage("users")}>Users</button>}
-          {isLeadOrHr && <button className={page === "audit" ? "active" : ""} onClick={() => setPage("audit")}>Audit</button>}
-          <button className="danger" onClick={logout}>Logout</button>
+        <nav className="nav nav-compact">
+          <button className="secondary" onClick={goBack}>Back</button>
+          <button
+            className={page === "dashboard" ? "active" : ""}
+            onClick={() => {
+              navigateToPage("dashboard");
+            }}
+          >
+            Home
+          </button>
+          <button
+            className={`nav-menu-toggle ${navMenuOpen ? "open" : ""}`}
+            onClick={() => setNavMenuOpen((value) => !value)}
+            aria-expanded={navMenuOpen}
+            aria-label="Open navigation menu"
+            type="button"
+          >
+            ...
+          </button>
+          <div className={`nav-menu ${navMenuOpen ? "open" : ""}`}>
+            {(["dashboard", "profile", "tasks", "feedback", "notifications"] as Page[]).map((item) => (
+              <button
+                key={item}
+                className={page === item ? "active" : ""}
+                onClick={() => {
+                  navigateToPage(item);
+                }}
+              >
+                {item === "notifications" ? `Notifications${unread ? ` (${unread})` : ""}` : item.charAt(0).toUpperCase() + item.slice(1)}
+              </button>
+            ))}
+            {isHr && (
+              <button
+                className={page === "users" ? "active" : ""}
+                onClick={() => {
+                  navigateToPage("users");
+                }}
+              >
+                Users
+              </button>
+            )}
+            {isLeadOrHr && (
+              <button
+                className={page === "audit" ? "active" : ""}
+                onClick={() => {
+                  navigateToPage("audit");
+                }}
+              >
+                Audit
+              </button>
+            )}
+            <button className="danger" onClick={logout}>Logout</button>
+          </div>
         </nav>
       </header>
       <section className="workspace">
         {message && <p className="message">{message}</p>}
-        {page === "dashboard" && <Dashboard progress={progress} tasks={tasks} notifications={notifications} profiles={filteredProfiles} markRead={markRead} isLeadOrHr={Boolean(isLeadOrHr)} filters={dashboardFilters} setFilters={setDashboardFilters} departments={departmentOptions} />}
+        {page === "home" && <WorkspaceHome profile={profile} progress={dashboardStats.progress} unread={unread} tasks={tasks} notifications={notifications} onOpenPage={setPage} canManageUsers={Boolean(isLeadOrHr)} />}
+        {page === "dashboard" && <Dashboard progress={dashboardStats.progress} pendingReview={dashboardStats.pendingReview} overdueTasks={dashboardStats.overdueTasks} tasks={dashboardTasks} notifications={notifications} profiles={filteredProfiles} markRead={markRead} isLeadOrHr={Boolean(isLeadOrHr)} filters={dashboardFilters} setFilters={setDashboardFilters} departments={departmentOptions} />}
         {page === "profile" && <ProfileEditor form={profileForm} setForm={setProfileForm} save={saveProfile} isLeadOrHr={Boolean(isLeadOrHr)} profiles={profiles} selectedProfileId={selectedProfileId} onSelectProfile={loadProfileForEditor} currentProfile={profiles.find((item) => item.id === selectedProfileId) || profile} />}
         {page === "tasks" && <Tasks tasks={tasks} profiles={profiles} form={taskForm} setForm={setTaskForm} assign={assignTask} updateTask={updateTask} isLeadOrHr={Boolean(isLeadOrHr)} selectedTaskUserId={selectedTaskUserId} onSelectUser={loadTasksForUser} currentRole={profile.role} />}
         {page === "feedback" && <FeedbackPanel feedback={feedback} form={feedbackForm} setForm={setFeedbackForm} addFeedback={addFeedback} isLeadOrHr={Boolean(isLeadOrHr)} profiles={profiles} selectedFeedbackUserId={selectedFeedbackUserId} onSelectUser={loadFeedbackForUser} canCreateExternalFeedback={canCreateExternalFeedback} canCreateInternalFeedback={canCreateInternalFeedback} />}
         {page === "notifications" && <NotificationsCenter notifications={notifications} unread={unread} markRead={markRead} markAllRead={markAllNotificationsRead} openNotification={openNotification} />}
-        {page === "users" && <Users profiles={profiles} inviteForm={inviteForm} setInviteForm={setInviteForm} inviteUser={inviteUser} inviteLink={inviteLink} updateRole={updateRole} resendInvite={resendInvite} />}
-        {page === "audit" && <Audit logs={auditLogs} />}
+        {page === "users" && <UsersPageEnhanced profiles={profiles} inviteForm={inviteForm} setInviteForm={setInviteForm} inviteUser={inviteUser} inviteLink={inviteLink} updateRole={updateRole} resendInvite={resendInvite} deleteUser={deleteUser} currentUserId={profile.id} canManageRoles={Boolean(isHr)} />}
+        {page === "audit" && <AuditTrailEnhanced logs={auditLogs} profiles={profiles} />}
       </section>
     </main>
   );
 }
 
-function Dashboard({ progress, tasks, notifications, profiles, markRead, isLeadOrHr, filters, setFilters, departments }: { progress: number; tasks: TrainingTask[]; notifications: NotificationItem[]; profiles: Profile[]; markRead: (id: string) => void; isLeadOrHr: boolean; filters: { department: string; role: string; status: string }; setFilters: (value: { department: string; role: string; status: string }) => void; departments: string[] }) {
+function WorkspaceHome({ profile, progress, unread, tasks, notifications, onOpenPage, canManageUsers }: { profile: Profile; progress: number; unread: number; tasks: TrainingTask[]; notifications: NotificationItem[]; onOpenPage: (page: Page) => void; canManageUsers: boolean }) {
+  const submitted = tasks.filter((task) => task.status === "SUBMITTED").length;
+  const completed = tasks.filter((task) => task.status === "COMPLETED").length;
+
   return (
     <div className="stack">
-      <section className="banner">
+      <section className="workspace-home-hero">
+        <div className="workspace-home-copy">
+          <p className="eyebrow">Workspace Home</p>
+          <h1>Welcome back, {profile.name || profile.email.split("@")[0]}.</h1>
+          <p>Track training progress, review work, and jump straight into the parts of the workspace that need your attention.</p>
+        </div>
+        <div className="workspace-home-highlight">
+          <span className="status-chip accent">{profile.role}</span>
+          <strong>{unread}</strong>
+          <p>Unread notifications waiting for you right now.</p>
+        </div>
+      </section>
+      <div className="workspace-home-grid">
+        <button className="workspace-home-card" onClick={() => onOpenPage("dashboard")} type="button">
+          <span>Overview</span>
+          <strong>{progress}%</strong>
+          <p>See overall progress and current team activity.</p>
+        </button>
+        <button className="workspace-home-card" onClick={() => onOpenPage("tasks")} type="button">
+          <span>Tasks</span>
+          <strong>{tasks.length}</strong>
+          <p>{submitted} waiting for review and {completed} already completed.</p>
+        </button>
+        <button className="workspace-home-card" onClick={() => onOpenPage("notifications")} type="button">
+          <span>Notifications</span>
+          <strong>{unread}</strong>
+          <p>Open alerts, reminders, and review requests.</p>
+        </button>
+      </div>
+      <div className="workspace-home-panel">
+        <div>
+          <p className="eyebrow">Quick Start</p>
+          <h2>Use the menu to open your full workspace</h2>
+          <p>The three-dots button in the header now opens the sidebar with every page inside it, so navigation stays clean and focused.</p>
+        </div>
+        <div className="workspace-home-actions">
+          <button onClick={() => onOpenPage("profile")} type="button">Open Profile</button>
+          <button className="secondary" onClick={() => onOpenPage("feedback")} type="button">View Feedback</button>
+          {canManageUsers && <button className="secondary" onClick={() => onOpenPage("users")} type="button">Manage Users</button>}
+        </div>
+      </div>
+      {notifications.length > 0 && (
+        <div className="workspace-home-feed">
+          <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <p className="eyebrow">Recent Activity</p>
+              <h2>Latest notifications</h2>
+            </div>
+            <button className="secondary" onClick={() => onOpenPage("notifications")} type="button">See All</button>
+          </div>
+          <div className="workspace-home-list">
+            {notifications.slice(0, 3).map((item) => (
+              <div key={item.id} className="workspace-home-list-item">
+                <span className={`status-chip ${item.readAt ? "muted" : "accent"}`}>{item.readAt ? "Read" : "New"}</span>
+                <p>{item.message}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Dashboard({ progress, pendingReview, overdueTasks, tasks, notifications, profiles, markRead, isLeadOrHr, filters, setFilters, departments }: { progress: number; pendingReview: number; overdueTasks: number; tasks: TrainingTask[]; notifications: NotificationItem[]; profiles: Profile[]; markRead: (id: string) => void; isLeadOrHr: boolean; filters: { department: string; role: string; status: string }; setFilters: (value: { department: string; role: string; status: string }) => void; departments: string[] }) {
+  return (
+    <div className="stack">
+      <section className="banner dashboard-hero">
         <div className="banner-copy">
+          <p className="eyebrow">Operations Center</p>
           <h1>Training Dashboard</h1>
+          <p className="dashboard-hero-note">
+            Track progress, review submissions, and keep the training pipeline moving without losing visibility.
+          </p>
         </div>
         <img src="https://images.unsplash.com/photo-1556761175-b413da4baf72?auto=format&fit=crop&w=900&q=80" alt="Planning board" />
       </section>
-      <div className="grid">
-        <div className="card"><h3>Progress</h3><strong>{progress}%</strong><progress max={100} value={progress} style={{ width: "100%" }} /></div>
-        <div className="card"><h3>Pending Review</h3><strong>{tasks.filter((task) => task.status === "SUBMITTED").length}</strong></div>
-        <div className="card"><h3>Overdue Tasks</h3><strong>{tasks.filter((task) => task.dueDate && new Date(task.dueDate) < new Date() && task.status !== "COMPLETED").length}</strong></div>
+      <div className="dashboard-metrics">
+        <div className="dashboard-stat">
+          <strong>Progress</strong>
+          <span>{progress}%</span>
+          <progress max={100} value={progress} style={{ width: "100%" }} />
+        </div>
+        <div className="dashboard-stat">
+          <strong>Pending Review</strong>
+          <span>{tasks.filter((task) => task.status === "SUBMITTED").length}</span>
+          <p>Items waiting for reviewer action</p>
+        </div>
+        <div className="dashboard-stat">
+          <strong>Overdue Tasks</strong>
+          <span>{tasks.filter((task) => task.dueDate && new Date(task.dueDate) < new Date() && task.status !== "COMPLETED").length}</span>
+          <p>Assignments past due date</p>
+        </div>
       </div>
           {isLeadOrHr && <div className="card"><h2>Developer Dashboards</h2><div className="form-grid"><label>Status<select value={filters.status} onChange={(event) => setFilters({ ...filters, status: event.target.value })}><option value="ALL">All statuses</option>{statuses.map((status) => <option key={status}>{status}</option>)}</select></label><label>Department<select value={filters.department} onChange={(event) => setFilters({ ...filters, department: event.target.value })}><option value="ALL">All departments</option>{departments.map((department) => <option key={department}>{department}</option>)}</select></label><label>Role<select value={filters.role} onChange={(event) => setFilters({ ...filters, role: event.target.value })}><option value="ALL">All roles</option>{roles.map((role) => <option key={role}>{role}</option>)}</select></label></div>{profiles.map((profile) => <p key={profile.id}>{profile.name || profile.email} · {profile.department || "No department"} · {profile.trainingStatus}</p>)}{profiles.length === 0 && <p>No profiles match the current filters.</p>}</div>}
       <div className="card"><h2>Notifications</h2>{notifications.length === 0 && <p>No notifications yet.</p>}{notifications.map((item) => <p key={item.id}>{item.message} {!item.readAt && <button className="secondary" onClick={() => markRead(item.id)}>Mark Read</button>}</p>)}</div>
@@ -796,15 +1160,400 @@ function Tasks({ tasks, profiles, form, setForm, assign, updateTask, isLeadOrHr,
 }
 
 function FeedbackPanel({ feedback, form, setForm, addFeedback, isLeadOrHr, profiles, selectedFeedbackUserId, onSelectUser, canCreateExternalFeedback, canCreateInternalFeedback }: { feedback: Feedback[]; form: any; setForm: (value: any) => void; addFeedback: () => void; isLeadOrHr: boolean; profiles: Profile[]; selectedFeedbackUserId: number | null; onSelectUser: (userId: number) => void; canCreateExternalFeedback: boolean; canCreateInternalFeedback: boolean }) {
-  return <div className="stack">{(canCreateExternalFeedback || canCreateInternalFeedback) && <div className="card stack"><div className="row" style={{ justifyContent: "space-between" }}><h2>Add Feedback</h2>{isLeadOrHr && <label style={{ minWidth: 260 }}>Developer<select value={selectedFeedbackUserId ?? ""} onChange={(event) => {
-    const userId = Number(event.target.value);
-    setForm({ ...form, developerId: String(userId) });
-    onSelectUser(userId);
-  }}>{profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name || profile.email}</option>)}</select></label>}</div><div className="form-grid"><label>Developer ID<input value={selectedFeedbackUserId ?? form.developerId} readOnly /></label><label>Type<select value={form.type} onChange={(event) => setForm({ ...form, type: event.target.value as FeedbackType })}><option>EXTERNAL</option>{canCreateInternalFeedback && <option>INTERNAL</option>}</select></label><label>Feedback<textarea value={form.content} onChange={(event) => setForm({ ...form, content: event.target.value })} /></label></div><button onClick={addFeedback}>Add Feedback</button></div>}<div className="grid"><div className="card"><h2>External Feedback</h2>{feedback.filter((item) => item.type === "EXTERNAL").map((item) => <p key={item.id}>{item.content}</p>)}</div>{isLeadOrHr && <div className="card"><h2>Internal Feedback</h2>{feedback.filter((item) => item.type === "INTERNAL").map((item) => <p key={item.id}>{item.content}</p>)}</div>}</div></div>;
+  return <div className="stack">
+    <div className="profile-hero">
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+        <div className="stack" style={{ gap: 10 }}>
+          <p className="eyebrow">Review Notes</p>
+          <h2>Feedback Workspace</h2>
+          <p className="hero-note">
+            Capture coaching notes, formal review comments, and restricted internal observations from one tidy workspace.
+          </p>
+        </div>
+        {isLeadOrHr && <label style={{ minWidth: 280 }}>Developer<select value={selectedFeedbackUserId ?? ""} onChange={(event) => {
+          const userId = Number(event.target.value);
+          setForm({ ...form, developerId: String(userId) });
+          onSelectUser(userId);
+        }}>{profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name || profile.email}</option>)}</select></label>}
+      </div>
+    </div>
+
+    {(canCreateExternalFeedback || canCreateInternalFeedback) && <div className="card stack">
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+        <div>
+          <p className="eyebrow">Add Entry</p>
+          <h2>Add Feedback</h2>
+        </div>
+        <span className="status-chip muted">Developer ID {selectedFeedbackUserId ?? form.developerId}</span>
+      </div>
+
+      <div className="feedback-compose">
+        <label>
+          Type
+          <select value={form.type} onChange={(event) => setForm({ ...form, type: event.target.value as FeedbackType })}>
+            <option>EXTERNAL</option>
+            {canCreateInternalFeedback && <option>INTERNAL</option>}
+          </select>
+        </label>
+
+        <label className="feedback-compose-main">
+          Feedback
+          <textarea value={form.content} onChange={(event) => setForm({ ...form, content: event.target.value })} />
+        </label>
+      </div>
+
+      <div className="row" style={{ justifyContent: "flex-end" }}>
+        <button onClick={addFeedback}>Add Feedback</button>
+      </div>
+    </div>}
+
+    <div className="grid">
+      <div className="card stack">
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <p className="eyebrow">Visible to developer</p>
+            <h2>External Feedback</h2>
+          </div>
+          <span className="status-chip accent">{feedback.filter((item) => item.type === "EXTERNAL").length}</span>
+        </div>
+        <div className="feedback-list">
+          {feedback.filter((item) => item.type === "EXTERNAL").length === 0 && <div className="empty-state">No external feedback yet.</div>}
+          {feedback.filter((item) => item.type === "EXTERNAL").map((item) => <div key={item.id} className="feedback-entry"><p>{item.content}</p></div>)}
+        </div>
+      </div>
+
+      {isLeadOrHr && <div className="card stack">
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <p className="eyebrow">Restricted notes</p>
+            <h2>Internal Feedback</h2>
+          </div>
+          <span className="status-chip">{feedback.filter((item) => item.type === "INTERNAL").length}</span>
+        </div>
+        <div className="feedback-list">
+          {feedback.filter((item) => item.type === "INTERNAL").length === 0 && <div className="empty-state">No internal feedback yet.</div>}
+          {feedback.filter((item) => item.type === "INTERNAL").map((item) => <div key={item.id} className="feedback-entry restricted"><p>{item.content}</p></div>)}
+        </div>
+      </div>}
+    </div>
+  </div>;
 }
 
-function Users({ profiles, inviteForm, setInviteForm, inviteUser, inviteLink, updateRole, resendInvite }: { profiles: Profile[]; inviteForm: any; setInviteForm: (value: any) => void; inviteUser: () => void; inviteLink: string; updateRole: (userId: number, role: Role) => void; resendInvite: (profile: Profile) => void }) {
-  return <div className="stack"><div className="card stack"><h2>Invite User</h2><div className="form-grid"><label>Email<input value={inviteForm.email} onChange={(event) => setInviteForm({ ...inviteForm, email: event.target.value })} /></label><label>Name<input value={inviteForm.name} onChange={(event) => setInviteForm({ ...inviteForm, name: event.target.value })} /></label><label>Department<input value={inviteForm.department} onChange={(event) => setInviteForm({ ...inviteForm, department: event.target.value })} /></label><label>Role<select value={inviteForm.role} onChange={(event) => setInviteForm({ ...inviteForm, role: event.target.value as Role })}>{roles.map((role) => <option key={role}>{role}</option>)}</select></label></div><button onClick={inviteUser}>Create Invite</button>{inviteLink && <p className="message">{inviteLink}</p>}</div><div className="card"><h2>Manage Users</h2>{profiles.map((profile) => <div key={profile.id} className="row" style={{ justifyContent: "space-between", alignItems: "flex-end", borderBottom: "1px solid var(--line)", paddingBottom: 12, marginBottom: 12 }}><div><strong style={{ fontFamily: "Space Grotesk, sans-serif", fontSize: 18 }}>{profile.name || profile.email}</strong><p>{profile.email}</p><p>{profile.department || "No department"} · {profile.trainingStatus || "NOT_STARTED"} · {profile.inviteExpiresAt ? "Invite Pending" : "Active"}</p></div><div className="row"><select value={profile.role} onChange={(event) => updateRole(profile.id, event.target.value as Role)}>{roles.map((role) => <option key={role}>{role}</option>)}</select>{profile.inviteExpiresAt && <button className="secondary" onClick={() => resendInvite(profile)}>Resend Invite</button>}</div></div>)}</div></div>;
+function Users({ profiles, inviteForm, setInviteForm, inviteUser, inviteLink, updateRole, resendInvite, deleteUser, currentUserId, canManageRoles }: { profiles: Profile[]; inviteForm: any; setInviteForm: (value: any) => void; inviteUser: () => void; inviteLink: string; updateRole: (userId: number, role: Role) => void; resendInvite: (profile: Profile) => void; deleteUser: (userId: number, userLabel: string) => void; currentUserId: number; canManageRoles: boolean }) {
+  return (
+    <div className="stack">
+      <div className="profile-hero">
+        <div className="stack" style={{ gap: 10 }}>
+          <p className="eyebrow">Team Admin</p>
+          <h2>User Management</h2>
+          <p className="hero-note">
+            Invite teammates, update roles, and keep account status visible without digging through a flat list.
+          </p>
+        </div>
+      </div>
+
+      <div className="card stack">
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <p className="eyebrow">Invite Flow</p>
+            <h2>Invite User</h2>
+          </div>
+          <span className="status-chip accent">HR only</span>
+        </div>
+        <div className="form-grid">
+          <label>Email<input value={inviteForm.email} onChange={(event) => setInviteForm({ ...inviteForm, email: event.target.value })} /></label>
+          <label>Name<input value={inviteForm.name} onChange={(event) => setInviteForm({ ...inviteForm, name: event.target.value })} /></label>
+          <label>Department<input value={inviteForm.department} onChange={(event) => setInviteForm({ ...inviteForm, department: event.target.value })} /></label>
+          <label>Role<select value={inviteForm.role} onChange={(event) => setInviteForm({ ...inviteForm, role: event.target.value as Role })}>{roles.map((role) => <option key={role}>{role}</option>)}</select></label>
+        </div>
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "center", gap: 16 }}>
+          <button onClick={inviteUser}>Create Invite</button>
+          {inviteLink && <div className="invite-link-box">{inviteLink}</div>}
+        </div>
+      </div>
+
+      <div className="card stack">
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <p className="eyebrow">Accounts</p>
+            <h2>Manage Users</h2>
+          </div>
+          <span className="status-chip muted">{profiles.length} users</span>
+        </div>
+
+        <div className="users-grid">
+          {profiles.map((profile) => (
+            <div key={profile.id} className="user-admin-card">
+              <div className="user-admin-head">
+                <div className="user-admin-avatar">
+                  {(profile.name || profile.email).charAt(0).toUpperCase()}
+                </div>
+                <div className="stack" style={{ gap: 6 }}>
+                  <h3>{profile.name || profile.email}</h3>
+                  <p>{profile.email}</p>
+                </div>
+              </div>
+
+              <div className="chip-row">
+                <span className="status-chip">{profile.role}</span>
+                <span className="status-chip muted">{profile.department || "No department"}</span>
+                <span className={`status-chip ${profile.inviteExpiresAt ? "" : "accent"}`}>
+                  {profile.inviteExpiresAt ? "Invite Pending" : "Active"}
+                </span>
+              </div>
+
+              <div className="detail-list compact">
+                <div>
+                  <strong>Training Status</strong>
+                  <span>{profile.trainingStatus || "NOT_STARTED"}</span>
+                </div>
+                <div>
+                  <strong>Access</strong>
+                  <span>{profile.inviteExpiresAt ? "Awaiting setup" : "Ready"}</span>
+                </div>
+              </div>
+
+              <div className="user-admin-actions">
+                <label>
+                  Role
+                  <select value={profile.role} onChange={(event) => updateRole(profile.id, event.target.value as Role)}>
+                    {roles.map((role) => <option key={role}>{role}</option>)}
+                  </select>
+                </label>
+                {profile.inviteExpiresAt && (
+                  <button className="secondary" onClick={() => resendInvite(profile)}>
+                    Resend Invite
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DeleteUsersPanel() {
+  return null;
+}
+
+function AuditTrailEnhanced({ logs, profiles }: { logs: AuditLog[]; profiles: Profile[] }) {
+  const getPayload = (log: AuditLog) => (log.details || log.metadata || {}) as Record<string, any>;
+
+  const getUserById = (id?: number | string) => {
+    if (id === undefined || id === null) {
+      return undefined;
+    }
+
+    const numericId = Number(id);
+    if (Number.isNaN(numericId)) {
+      return undefined;
+    }
+
+    return profiles.find((profile) => profile.id === numericId);
+  };
+
+  const formatActor = (log: AuditLog) => {
+    const actor = getUserById(log.actorId);
+
+    if (actor) {
+      return {
+        email: actor.email,
+        id: actor.id,
+        label: actor.name || actor.email,
+      };
+    }
+
+    return log.actorId ? { email: "", id: log.actorId, label: `User ${log.actorId}` } : null;
+  };
+
+  const formatSubject = (log: AuditLog) => {
+    if (log.entityType !== "users" || !log.entityId) {
+      return null;
+    }
+
+    const subject = getUserById(log.entityId);
+
+    if (subject) {
+      return {
+        email: subject.email,
+        id: subject.id,
+        label: subject.name || subject.email,
+      };
+    }
+
+    return { email: "", id: log.entityId, label: `User ${log.entityId}` };
+  };
+
+  const describeChanges = (log: AuditLog) => {
+    const payload = getPayload(log);
+
+    if (payload.oldRole || payload.newRole) {
+      return [`Role changed from ${payload.oldRole || "Unknown"} to ${payload.newRole || "Unknown"}`];
+    }
+
+    if (payload.oldStatus || payload.newStatus) {
+      return [`Status moved from ${payload.oldStatus || "Unknown"} to ${payload.newStatus || "Unknown"}`];
+    }
+
+    if (payload.status) {
+      return [`Status set to ${payload.status}`];
+    }
+
+    if (payload.fields && Array.isArray(payload.fields) && payload.fields.length) {
+      return [`Updated fields: ${payload.fields.join(", ")}`];
+    }
+
+    if (payload.assignedTo || payload.title) {
+      const assignedProfile = getUserById(payload.assignedTo);
+      return [
+        `Assigned "${payload.title || "task"}"${assignedProfile ? ` to ${assignedProfile.name || assignedProfile.email}` : ""}`,
+      ];
+    }
+
+    if (payload.deletedEmail || payload.deletedRole) {
+      return [`Deleted account ${payload.deletedEmail || ""}${payload.deletedRole ? ` (${payload.deletedRole})` : ""}`];
+    }
+
+    if (payload.email || payload.role || payload.inviteMode) {
+      return [
+        `${payload.inviteMode === "resent" ? "Invite resent" : "Invite created"}${payload.email ? ` for ${payload.email}` : ""}${payload.role ? ` as ${payload.role}` : ""}`,
+      ];
+    }
+
+    return [];
+  };
+
+  const formatActionLabel = (action: string) => action.replaceAll("_", " ");
+
+  return (
+    <div className="stack">
+      <div className="card stack">
+        <div>
+          <p className="eyebrow">Governance</p>
+          <h2>Audit Log</h2>
+          <p>See who made each change, who was affected, and the important details behind every update.</p>
+        </div>
+      </div>
+      <div className="card stack">
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <p className="eyebrow">Activity Stream</p>
+            <h2>Recent Events</h2>
+          </div>
+          <span className="status-chip muted">{logs.length} entries</span>
+        </div>
+        {logs.length === 0 && <p>No audit entries yet.</p>}
+        <div className="audit-list">
+          {logs.map((log) => {
+            const actor = formatActor(log);
+            const subject = formatSubject(log);
+            const changes = describeChanges(log);
+
+            return (
+              <article key={log.id} className="audit-item">
+                <div className="audit-item-top">
+                  <div className="audit-chip-group">
+                    <span className="status-chip accent">{formatActionLabel(log.action)}</span>
+                    <span className="status-chip muted">{log.entityType}</span>
+                  </div>
+                  <span className="audit-time">{log.createdAt ? new Date(log.createdAt).toLocaleString() : "Unknown time"}</span>
+                </div>
+                <div className="audit-meta">
+                  {actor && (
+                    <div className="audit-person">
+                      <span>Actor</span>
+                      <strong>{actor.label}</strong>
+                      <small>ID {actor.id}{actor.email ? ` · ${actor.email}` : ""}</small>
+                    </div>
+                  )}
+                  {subject && (
+                    <div className="audit-person">
+                      <span>Affected User</span>
+                      <strong>{subject.label}</strong>
+                      <small>ID {subject.id}{subject.email ? ` · ${subject.email}` : ""}</small>
+                    </div>
+                  )}
+                  {!subject && log.entityId && (
+                    <div className="audit-person">
+                      <span>Entity</span>
+                      <strong>{log.entityType}</strong>
+                      <small>ID {log.entityId}</small>
+                    </div>
+                  )}
+                </div>
+                {changes.length > 0 && (
+                  <div className="audit-change-list">
+                    {changes.map((change) => <p key={change}>{change}</p>)}
+                  </div>
+                )}
+              </article>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function UsersPageEnhanced({ profiles, inviteForm, setInviteForm, inviteUser, inviteLink, updateRole, resendInvite, deleteUser, currentUserId, canManageRoles }: { profiles: Profile[]; inviteForm: any; setInviteForm: (value: any) => void; inviteUser: () => void; inviteLink: string; updateRole: (userId: number, role: Role) => void; resendInvite: (profile: Profile) => void; deleteUser: (userId: number, userLabel: string) => void; currentUserId: number; canManageRoles: boolean }) {
+  return (
+    <div className="stack">
+      <div className="card stack">
+        <h2>Invite User</h2>
+        <div className="form-grid">
+          <label>Email<input value={inviteForm.email} onChange={(event) => setInviteForm({ ...inviteForm, email: event.target.value })} /></label>
+          <label>Name<input value={inviteForm.name} onChange={(event) => setInviteForm({ ...inviteForm, name: event.target.value })} /></label>
+          <label>Department<input value={inviteForm.department} onChange={(event) => setInviteForm({ ...inviteForm, department: event.target.value })} /></label>
+          <label>Role<select value={inviteForm.role} onChange={(event) => setInviteForm({ ...inviteForm, role: event.target.value as Role })}>{roles.map((role) => <option key={role}>{role}</option>)}</select></label>
+        </div>
+        <button onClick={inviteUser}>Create Invite</button>
+        {inviteLink && <p className="message">{inviteLink}</p>}
+      </div>
+      <div className="stack users-grid">
+        {profiles.map((profile) => (
+          <div key={profile.id} className="user-admin-card">
+            <div className="user-admin-head">
+              <div>
+                <strong style={{ fontFamily: "Space Grotesk, sans-serif", fontSize: 20 }}>{profile.name || profile.email}</strong>
+                <p style={{ margin: "8px 0 0" }}>{profile.email}</p>
+              </div>
+              <div className="user-admin-actions">
+                {canManageRoles ? (
+                  <select value={profile.role} onChange={(event) => updateRole(profile.id, event.target.value as Role)}>
+                    {roles.map((role) => <option key={role}>{role}</option>)}
+                  </select>
+                ) : (
+                  <span className="status-chip muted">{profile.role}</span>
+                )}
+                {profile.inviteExpiresAt && <button className="secondary" onClick={() => resendInvite(profile)}>Resend Invite</button>}
+                {profile.id !== currentUserId && (
+                  <button className="icon-danger-button" aria-label={`Delete ${profile.name || profile.email}`} onClick={() => deleteUser(profile.id, profile.name || profile.email)} type="button">
+                    🗑
+                  </button>
+                )}
+              </div>
+            </div>
+            <div className="detail-list compact">
+              <div>
+                <span>Department</span>
+                <strong>{profile.department || "No department"}</strong>
+              </div>
+              <div>
+                <span>Status</span>
+                <strong>{profile.trainingStatus || "NOT_STARTED"}</strong>
+              </div>
+              <div>
+                <span>Access</span>
+                <strong>{profile.inviteExpiresAt ? "Invite Pending" : "Active"}</strong>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function NotificationsCenter({ notifications, unread, markRead, markAllRead, openNotification }: { notifications: NotificationItem[]; unread: number; markRead: (id: string) => void; markAllRead: () => void; openNotification: (item: NotificationItem) => void | Promise<void> }) {
@@ -851,5 +1600,46 @@ function NotificationsCenter({ notifications, unread, markRead, markAllRead, ope
 }
 
 function Audit({ logs }: { logs: AuditLog[] }) {
-  return <div className="card"><h2>Audit Log</h2>{logs.length === 0 && <p>No audit entries yet.</p>}{logs.map((log) => <p key={log.id}>{log.createdAt} · {log.action} · {log.entityType} {log.entityId}</p>)}</div>;
+  return (
+    <div className="stack">
+      <div className="profile-hero">
+        <div className="stack" style={{ gap: 10 }}>
+          <p className="eyebrow">Governance</p>
+          <h2>Audit Log</h2>
+          <p className="hero-note">
+            Review important account, profile, feedback, and task activity in one clean timeline.
+          </p>
+        </div>
+      </div>
+
+      <div className="card stack">
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <p className="eyebrow">Activity Stream</p>
+            <h2>Recent Events</h2>
+          </div>
+          <span className="status-chip muted">{logs.length} entries</span>
+        </div>
+
+        {logs.length === 0 && <div className="empty-state">No audit entries yet.</div>}
+
+        <div className="audit-list">
+          {logs.map((log) => (
+            <div key={log.id} className="audit-item">
+              <div className="audit-item-top">
+                <span className="status-chip">{log.action.replaceAll("_", " ")}</span>
+                <span className="audit-time">
+                  {log.createdAt ? new Date(log.createdAt).toLocaleString() : "Unknown time"}
+                </span>
+              </div>
+              <div className="audit-meta">
+                <strong>{log.entityType}</strong>
+                <span>{log.entityId || "No entity id"}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
 }
