@@ -94,7 +94,7 @@ router.patch("/:id/status", authenticate, async (req: Request, res: Response) =>
   try {
     const requester = (req as any).user;
     const taskId = String(req.params.id);
-    const { status } = req.body;
+    const { attachments = [], status } = req.body;
     const task = await prisma.task.findUnique({
       include: {
         assignedTo: {
@@ -131,8 +131,15 @@ router.patch("/:id/status", authenticate, async (req: Request, res: Response) =>
       return;
     }
 
+    const attachmentList = Array.isArray(attachments)
+      ? attachments.map((item) => String(item).trim()).filter(Boolean)
+      : String(attachments).split(",").map((item) => item.trim()).filter(Boolean);
+
     const updatedTask = await prisma.task.update({
-      data: { status },
+      data: {
+        attachments: attachmentList.length ? [...task.attachments, ...attachmentList] : task.attachments,
+        status,
+      },
       where: { id: taskId },
     });
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import api from "@/lib/api";
 
 type Role = "JUNIOR_DEV" | "SENIOR_DEV" | "TEAM_LEAD" | "HR";
@@ -124,9 +124,12 @@ export default function Home() {
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [dashboardTasks, setDashboardTasks] = useState<TrainingTask[]>([]);
   const [dashboardStats, setDashboardStats] = useState({
+    activeInvites: 0,
+    completedTasks: 0,
     overdueTasks: 0,
     pendingReview: 0,
     progress: 0,
+    totalUsers: 0,
   });
   const [dashboardFilters, setDashboardFilters] = useState({
     department: "ALL",
@@ -157,6 +160,8 @@ export default function Home() {
     priority: "MEDIUM",
     title: "",
   });
+  const [taskUploads, setTaskUploads] = useState<{ name: string; url: string }[]>([]);
+  const [submissionUploads, setSubmissionUploads] = useState<Record<string, { name: string; url: string }[]>>({});
   const [feedbackForm, setFeedbackForm] = useState({ content: "", developerId: "", type: "EXTERNAL" as FeedbackType });
   const [inviteForm, setInviteForm] = useState({ department: "", email: "", name: "", role: "JUNIOR_DEV" as Role });
   const [inviteLink, setInviteLink] = useState("");
@@ -219,6 +224,8 @@ export default function Home() {
     setFeedback([]);
     setNotifications([]);
     setAuditLogs([]);
+    setTaskUploads([]);
+    setSubmissionUploads({});
     setSelectedProfileId(null);
     setSelectedTaskUserId(null);
     setSelectedFeedbackUserId(null);
@@ -276,16 +283,19 @@ export default function Home() {
     setSelectedProfileId(userId);
   };
 
-  const buildDashboardStats = (items: TrainingTask[]) => {
+  const buildDashboardStats = (items: TrainingTask[], options?: { totalUsers?: number; activeInvites?: number }) => {
     setDashboardTasks(items);
     const completed = items.filter((task) => task.status === "COMPLETED").length;
     const pendingReview = items.filter((task) => task.status === "SUBMITTED").length;
     const overdueTasks = items.filter((task) => task.dueDate && new Date(task.dueDate) < new Date() && task.status !== "COMPLETED").length;
 
     setDashboardStats({
+      activeInvites: options?.activeInvites ?? 0,
+      completedTasks: completed,
       overdueTasks,
       pendingReview,
       progress: items.length ? Math.round((completed / items.length) * 100) : 0,
+      totalUsers: options?.totalUsers ?? 1,
     });
   };
 
@@ -313,7 +323,7 @@ export default function Home() {
       setFeedback(feedbackResponse.data);
       setSelectedTaskUserId(current.id);
       setSelectedFeedbackUserId(current.id);
-      buildDashboardStats(taskResponse.data);
+      buildDashboardStats(taskResponse.data, { totalUsers: 1, activeInvites: 0 });
 
       if (current.role === "HR" || current.role === "TEAM_LEAD") {
         const [profileList, auditResponse] = await Promise.all([
@@ -326,7 +336,10 @@ export default function Home() {
         const teamTaskResponses = await Promise.all(
           profileList.data.map((item) => api.get<TrainingTask[]>(`/tasks/${item.id}`))
         );
-        buildDashboardStats(teamTaskResponses.flatMap((response) => response.data));
+        buildDashboardStats(teamTaskResponses.flatMap((response) => response.data), {
+          activeInvites: profileList.data.filter((item) => item.inviteExpiresAt).length,
+          totalUsers: profileList.data.length,
+        });
       } else {
         setProfiles([current]);
         setAuditLogs([]);
@@ -506,21 +519,45 @@ export default function Home() {
 
   const assignTask = async () => {
     try {
+      const manualAttachments = taskForm.attachments
+        .split(",")
+        .map((item) => item.trim())
+        .filter(Boolean);
+
       await api.post("/tasks/assign", {
         ...taskForm,
-        attachments: taskForm.attachments.split(",").map((item) => item.trim()).filter(Boolean),
+        attachments: [
+          ...manualAttachments,
+          ...taskUploads.map((item) =>
+            JSON.stringify({
+              kind: "file",
+              name: item.name,
+              url: item.url,
+            })
+          ),
+        ],
       });
       setMessage("Task assigned.");
+      setTaskUploads([]);
+      setTaskForm((value) => ({
+        ...value,
+        attachments: "",
+        description: "",
+        dueDate: "",
+        priority: "MEDIUM",
+        title: "",
+      }));
       await loadData();
     } catch (error: any) {
       await handleRequestError(error, "Task assignment failed.");
     }
   };
 
-  const updateTask = async (taskId: string, status: TaskStatus) => {
+  const updateTask = async (taskId: string, status: TaskStatus, attachments: string[] = []) => {
     try {
-      await api.patch(`/tasks/${taskId}/status`, { status });
+      await api.patch(`/tasks/${taskId}/status`, { attachments, status });
       setMessage("Task updated.");
+      setSubmissionUploads((current) => ({ ...current, [taskId]: [] }));
       await loadData();
     } catch (error: any) {
       await handleRequestError(error, "Task update failed.");
@@ -919,10 +956,10 @@ export default function Home() {
       <section className="workspace">
         {message && <p className="message">{message}</p>}
         {page === "home" && <WorkspaceHome profile={profile} progress={dashboardStats.progress} unread={unread} tasks={tasks} notifications={notifications} onOpenPage={setPage} canManageUsers={Boolean(isLeadOrHr)} />}
-        {page === "dashboard" && <Dashboard progress={dashboardStats.progress} pendingReview={dashboardStats.pendingReview} overdueTasks={dashboardStats.overdueTasks} tasks={dashboardTasks} notifications={notifications} profiles={filteredProfiles} markRead={markRead} isLeadOrHr={Boolean(isLeadOrHr)} filters={dashboardFilters} setFilters={setDashboardFilters} departments={departmentOptions} />}
+        {page === "dashboard" && <Dashboard progress={dashboardStats.progress} pendingReview={dashboardStats.pendingReview} overdueTasks={dashboardStats.overdueTasks} completedTasks={dashboardStats.completedTasks} totalUsers={dashboardStats.totalUsers} activeInvites={dashboardStats.activeInvites} tasks={dashboardTasks} notifications={notifications} profiles={filteredProfiles} markRead={markRead} isLeadOrHr={Boolean(isLeadOrHr)} filters={dashboardFilters} setFilters={setDashboardFilters} departments={departmentOptions} />}
         {page === "profile" && <ProfileEditor form={profileForm} setForm={setProfileForm} save={saveProfile} isLeadOrHr={Boolean(isLeadOrHr)} profiles={profiles} selectedProfileId={selectedProfileId} onSelectProfile={loadProfileForEditor} currentProfile={profiles.find((item) => item.id === selectedProfileId) || profile} />}
-        {page === "tasks" && <Tasks tasks={tasks} profiles={profiles} form={taskForm} setForm={setTaskForm} assign={assignTask} updateTask={updateTask} isLeadOrHr={Boolean(isLeadOrHr)} selectedTaskUserId={selectedTaskUserId} onSelectUser={loadTasksForUser} currentRole={profile.role} />}
-        {page === "feedback" && <FeedbackPanel feedback={feedback} form={feedbackForm} setForm={setFeedbackForm} addFeedback={addFeedback} isLeadOrHr={Boolean(isLeadOrHr)} profiles={profiles} selectedFeedbackUserId={selectedFeedbackUserId} onSelectUser={loadFeedbackForUser} canCreateExternalFeedback={canCreateExternalFeedback} canCreateInternalFeedback={canCreateInternalFeedback} />}
+        {page === "tasks" && <TasksWorkspace tasks={tasks} profiles={profiles} form={taskForm} setForm={setTaskForm} assign={assignTask} updateTask={updateTask} isLeadOrHr={Boolean(isLeadOrHr)} selectedTaskUserId={selectedTaskUserId} onSelectUser={loadTasksForUser} currentRole={profile.role} taskUploads={taskUploads} setTaskUploads={setTaskUploads} submissionUploads={submissionUploads} setSubmissionUploads={setSubmissionUploads} setMessage={setMessage} />}
+        {page === "feedback" && <FeedbackDarkStudio feedback={feedback} form={feedbackForm} setForm={setFeedbackForm} addFeedback={addFeedback} isLeadOrHr={Boolean(isLeadOrHr)} profiles={profiles} selectedFeedbackUserId={selectedFeedbackUserId} onSelectUser={loadFeedbackForUser} canCreateExternalFeedback={canCreateExternalFeedback} canCreateInternalFeedback={canCreateInternalFeedback} />}
         {page === "notifications" && <NotificationsCenter notifications={notifications} unread={unread} markRead={markRead} markAllRead={markAllNotificationsRead} openNotification={openNotification} />}
         {page === "users" && <UsersPageEnhanced profiles={profiles} inviteForm={inviteForm} setInviteForm={setInviteForm} inviteUser={inviteUser} inviteLink={inviteLink} updateRole={updateRole} resendInvite={resendInvite} deleteUser={deleteUser} currentUserId={profile.id} canManageRoles={Boolean(isHr)} />}
         {page === "audit" && <AuditTrailEnhanced logs={auditLogs} profiles={profiles} />}
@@ -1001,7 +1038,7 @@ function WorkspaceHome({ profile, progress, unread, tasks, notifications, onOpen
   );
 }
 
-function Dashboard({ progress, pendingReview, overdueTasks, tasks, notifications, profiles, markRead, isLeadOrHr, filters, setFilters, departments }: { progress: number; pendingReview: number; overdueTasks: number; tasks: TrainingTask[]; notifications: NotificationItem[]; profiles: Profile[]; markRead: (id: string) => void; isLeadOrHr: boolean; filters: { department: string; role: string; status: string }; setFilters: (value: { department: string; role: string; status: string }) => void; departments: string[] }) {
+function Dashboard({ progress, pendingReview, overdueTasks, completedTasks, totalUsers, activeInvites, tasks, notifications, profiles, markRead, isLeadOrHr, filters, setFilters, departments }: { progress: number; pendingReview: number; overdueTasks: number; completedTasks: number; totalUsers: number; activeInvites: number; tasks: TrainingTask[]; notifications: NotificationItem[]; profiles: Profile[]; markRead: (id: string) => void; isLeadOrHr: boolean; filters: { department: string; role: string; status: string }; setFilters: (value: { department: string; role: string; status: string }) => void; departments: string[] }) {
   return (
     <div className="stack">
       <section className="banner dashboard-hero">
@@ -1148,6 +1185,363 @@ function ProfileEditor({ form, setForm, save, isLeadOrHr, profiles, selectedProf
       </div>
     </div>
   </div>;
+}
+
+const parseTaskAttachment = (item: string) => {
+  try {
+    const parsed = JSON.parse(item);
+    if (parsed?.kind === "file" && parsed?.name && parsed?.url) {
+      return {
+        href: parsed.url as string,
+        label: parsed.name as string,
+        kind: "file" as const,
+        source: parsed.source === "submission" ? ("submission" as const) : ("assignment" as const),
+      };
+    }
+  } catch (error) {
+    // Keep backward compatibility with plain URLs or labels.
+  }
+
+  return {
+    href: item,
+    label: item.replace(/^https?:\/\//, ""),
+    kind: "link" as const,
+    source: "assignment" as const,
+  };
+};
+
+const formatTaskStatus = (status: TaskStatus) =>
+  status
+    .split("_")
+    .map((part) => part.charAt(0) + part.slice(1).toLowerCase())
+    .join(" ");
+
+function TasksWorkspace({
+  tasks,
+  profiles,
+  form,
+  setForm,
+  assign,
+  updateTask,
+  isLeadOrHr,
+  selectedTaskUserId,
+  onSelectUser,
+  currentRole,
+  taskUploads,
+  setTaskUploads,
+  submissionUploads,
+  setSubmissionUploads,
+  setMessage,
+}: {
+  tasks: TrainingTask[];
+  profiles: Profile[];
+  form: any;
+  setForm: (value: any) => void;
+  assign: () => void;
+  updateTask: (id: string, status: TaskStatus, attachments?: string[]) => void;
+  isLeadOrHr: boolean;
+  selectedTaskUserId: number | null;
+  onSelectUser: (userId: number) => void;
+  currentRole: Role;
+  taskUploads: { name: string; url: string }[];
+  setTaskUploads: Dispatch<SetStateAction<{ name: string; url: string }[]>>;
+  submissionUploads: Record<string, { name: string; url: string }[]>;
+  setSubmissionUploads: Dispatch<SetStateAction<Record<string, { name: string; url: string }[]>>>;
+  setMessage: (value: string) => void;
+}) {
+  const handleAttachmentSelect = (event: any) => {
+    const files = Array.from(event.target.files || []) as File[];
+
+    if (!files.length) {
+      return;
+    }
+
+    files.forEach((file) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result === "string") {
+          setTaskUploads((current) => [...current, { name: file.name, url: reader.result as string }]);
+        }
+      };
+      reader.readAsDataURL(file);
+    });
+
+    event.target.value = "";
+  };
+
+  const removeTaskUpload = (name: string) => {
+    setTaskUploads(taskUploads.filter((item) => item.name !== name));
+  };
+
+  const handleSubmissionFileSelect = (taskId: string, event: any) => {
+    const files = Array.from(event.target.files || []) as File[];
+
+    if (!files.length) {
+      return;
+    }
+
+    files.forEach((file) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result === "string") {
+          setSubmissionUploads((current) => ({
+            ...current,
+            [taskId]: [...(current[taskId] || []), { name: file.name, url: reader.result as string }],
+          }));
+        }
+      };
+      reader.readAsDataURL(file);
+    });
+
+    event.target.value = "";
+  };
+
+  const removeSubmissionFile = (taskId: string, fileName: string) => {
+    setSubmissionUploads((current) => ({
+      ...current,
+      [taskId]: (current[taskId] || []).filter((item) => item.name !== fileName),
+    }));
+  };
+
+  const submitTaskStatus = (taskId: string, status: TaskStatus) => {
+    const submissionAttachments =
+      status === "SUBMITTED"
+        ? (submissionUploads[taskId] || []).map((item) =>
+            JSON.stringify({
+              kind: "file",
+              name: item.name,
+              source: "submission",
+              url: item.url,
+            })
+          )
+        : [];
+
+    updateTask(taskId, status, submissionAttachments);
+  };
+
+  return (
+    <div className="stack">
+      {isLeadOrHr && (
+        <section className="task-compose">
+          <div className="task-compose-intro">
+            <p className="eyebrow">Task Studio</p>
+            <h2>Assign Task</h2>
+            <p>Send clean task briefs with files, links, due dates, and priority in one place.</p>
+          </div>
+          <div className="task-compose-grid">
+            <label>
+              Developer
+              <select value={form.assignedTo} onChange={(event) => setForm({ ...form, assignedTo: event.target.value })}>
+                {profiles.map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {profile.name || profile.email}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Title
+              <input value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} />
+            </label>
+            <label>
+              Priority
+              <select value={form.priority} onChange={(event) => setForm({ ...form, priority: event.target.value })}>
+                <option>LOW</option>
+                <option>MEDIUM</option>
+                <option>HIGH</option>
+                <option>CRITICAL</option>
+              </select>
+            </label>
+            <label>
+              Due Date
+              <input type="date" value={form.dueDate} onChange={(event) => setForm({ ...form, dueDate: event.target.value })} />
+            </label>
+            <label className="task-file-picker">
+              Attach Files
+              <input type="file" multiple onChange={handleAttachmentSelect} />
+              <span>{taskUploads.length ? `${taskUploads.length} file${taskUploads.length > 1 ? "s" : ""} selected` : "Choose files"}</span>
+            </label>
+            <label>
+              Attachment Links
+              <input
+                value={form.attachments}
+                placeholder="Paste links separated by commas"
+                onChange={(event) => setForm({ ...form, attachments: event.target.value })}
+              />
+            </label>
+            <label className="task-compose-description">
+              Description
+              <textarea value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
+            </label>
+          </div>
+          {(taskUploads.length > 0 || form.attachments.trim()) && (
+            <div className="task-attachment-strip">
+              {taskUploads.map((item) => (
+                <div key={item.name} className="task-attachment-chip">
+                  <span>{item.name}</span>
+                  <button type="button" className="secondary" onClick={() => removeTaskUpload(item.name)}>
+                    Remove
+                  </button>
+                </div>
+              ))}
+              {form.attachments
+                .split(",")
+                .map((item) => item.trim())
+                .filter(Boolean)
+                .map((item) => (
+                  <div key={item} className="task-attachment-chip muted">
+                    <span>{item}</span>
+                  </div>
+                ))}
+            </div>
+          )}
+          <div className="task-compose-actions">
+            <button onClick={assign}>Assign Task</button>
+          </div>
+        </section>
+      )}
+
+      <section className="task-board">
+        <div className="task-board-head">
+          <div>
+            <p className="eyebrow">Current Work</p>
+            <h2>Tasks</h2>
+          </div>
+          {isLeadOrHr && (
+            <label className="task-user-select">
+              Developer
+              <select value={selectedTaskUserId ?? ""} onChange={(event) => onSelectUser(Number(event.target.value))}>
+                {profiles.map((profile) => (
+                  <option key={profile.id} value={profile.id}>
+                    {profile.name || profile.email}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+        </div>
+
+        <div className="task-card-list">
+          {tasks.length === 0 && <div className="task-empty">No tasks yet.</div>}
+          {tasks.map((task) => {
+            const actionOptions = getTaskStatusOptions(task.status, currentRole);
+            const hasRealAction = actionOptions.some((status) => status !== task.status);
+            const attachments = task.attachments?.map(parseTaskAttachment) || [];
+            const assignmentAttachments = attachments.filter((item) => item.source !== "submission");
+            const submissionAttachments = attachments.filter((item) => item.source === "submission");
+
+            return (
+              <article key={task.id} className="task-item-card">
+                <div className="task-item-layout">
+                  <div className="task-item-main">
+                    <div className="task-item-head">
+                      <div>
+                        <h3>{task.title}</h3>
+                        <p>{task.description || "No description yet."}</p>
+                      </div>
+                    </div>
+
+                    <div className="task-item-details">
+                      <div>
+                        <span>Due Date</span>
+                        <strong>{task.dueDate?.slice(0, 10) || "TBD"}</strong>
+                      </div>
+                      <div>
+                        <span>Attachments</span>
+                        <strong>{attachments.length || "None"}</strong>
+                      </div>
+                    </div>
+
+                {assignmentAttachments.length > 0 && (
+                  <div className="task-item-attachments">
+                    <strong className="task-attachment-label">Task Attachments</strong>
+                    {assignmentAttachments.map((item) => (
+                      <a
+                        key={`${task.id}-${item.label}`}
+                        href={item.href}
+                        download={item.kind === "file" ? item.label : undefined}
+                        target={item.kind === "file" ? undefined : "_blank"}
+                        rel={item.kind === "file" ? undefined : "noreferrer"}
+                        className="task-link-pill"
+                      >
+                        {item.label}
+                      </a>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <aside className="task-item-side">
+                    <div className="task-item-meta">
+                      <span className={`badge ${task.status === "COMPLETED" ? "ok" : task.status === "NEEDS_REVISION" ? "warn" : "muted"}`}>{task.status}</span>
+                      <span className={`task-priority ${String(task.priority).toLowerCase()}`}>{task.priority}</span>
+                    </div>
+
+                {submissionAttachments.length > 0 && (
+                  <div className="task-item-attachments submission">
+                    <strong className="task-attachment-label">Submitted Documents</strong>
+                    {submissionAttachments.map((item) => (
+                      <a
+                        key={`${task.id}-submission-${item.label}`}
+                        href={item.href}
+                        download={item.kind === "file" ? item.label : undefined}
+                        target={item.kind === "file" ? undefined : "_blank"}
+                        rel={item.kind === "file" ? undefined : "noreferrer"}
+                        className="task-link-pill submitted"
+                      >
+                        {item.label}
+                      </a>
+                    ))}
+                  </div>
+                )}
+
+                {!isLeadOrHr && !["SUBMITTED", "REVIEWED", "COMPLETED"].includes(task.status) && (
+                  <div className="task-submission-upload">
+                    <div>
+                      <span>Submission Documents</span>
+                      <p>Attach completed work before choosing Submitted.</p>
+                    </div>
+                    <label>
+                      Upload documents
+                      <input type="file" multiple onChange={(event) => handleSubmissionFileSelect(task.id, event)} />
+                    </label>
+                    {(submissionUploads[task.id] || []).length > 0 && (
+                      <div className="task-submission-files">
+                        {(submissionUploads[task.id] || []).map((item) => (
+                          <button key={item.name} type="button" onClick={() => removeSubmissionFile(task.id, item.name)}>
+                            {item.name} x
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <div className="task-item-actions">
+                      {hasRealAction ? (
+                        <label>
+                          Update Status
+                      <select value={task.status} onChange={(event) => submitTaskStatus(task.id, event.target.value as TaskStatus)}>
+                            {actionOptions.map((status) => (
+                              <option key={status}>{status}</option>
+                            ))}
+                          </select>
+                        </label>
+                      ) : (
+                        <span className="status-chip muted">
+                          {task.status === "SUBMITTED" ? "Awaiting review" : task.status === "COMPLETED" ? "Finished" : "No action available"}
+                        </span>
+                      )}
+                    </div>
+                  </aside>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      </section>
+    </div>
+  );
 }
 
 function Tasks({ tasks, profiles, form, setForm, assign, updateTask, isLeadOrHr, selectedTaskUserId, onSelectUser, currentRole }: { tasks: TrainingTask[]; profiles: Profile[]; form: any; setForm: (value: any) => void; assign: () => void; updateTask: (id: string, status: TaskStatus) => void; isLeadOrHr: boolean; selectedTaskUserId: number | null; onSelectUser: (userId: number) => void; currentRole: Role }) {
@@ -1339,6 +1733,8 @@ function DeleteUsersPanel() {
 }
 
 function AuditTrailEnhanced({ logs, profiles }: { logs: AuditLog[]; profiles: Profile[] }) {
+  const [auditQuery, setAuditQuery] = useState("");
+  const [auditAction, setAuditAction] = useState("ALL");
   const getPayload = (log: AuditLog) => (log.details || log.metadata || {}) as Record<string, any>;
 
   const getUserById = (id?: number | string) => {
@@ -1427,6 +1823,34 @@ function AuditTrailEnhanced({ logs, profiles }: { logs: AuditLog[]; profiles: Pr
 
   const formatActionLabel = (action: string) => action.replaceAll("_", " ");
 
+  const filteredLogs = useMemo(() => {
+    return logs.filter((log) => {
+      const payload = getPayload(log);
+      const actor = formatActor(log);
+      const subject = formatSubject(log);
+      const haystack = [
+        log.action,
+        log.entityType,
+        log.entityId,
+        actor?.label,
+        actor?.email,
+        subject?.label,
+        subject?.email,
+        JSON.stringify(payload),
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+
+      const matchesQuery = !auditQuery.trim() || haystack.includes(auditQuery.trim().toLowerCase());
+      const matchesAction = auditAction === "ALL" || log.action === auditAction;
+
+      return matchesQuery && matchesAction;
+    });
+  }, [logs, auditQuery, auditAction, profiles]);
+
+  const actionOptions = Array.from(new Set(logs.map((log) => log.action)));
+
   return (
     <div className="stack">
       <div className="card stack">
@@ -1442,11 +1866,24 @@ function AuditTrailEnhanced({ logs, profiles }: { logs: AuditLog[]; profiles: Pr
             <p className="eyebrow">Activity Stream</p>
             <h2>Recent Events</h2>
           </div>
-          <span className="status-chip muted">{logs.length} entries</span>
+          <span className="status-chip muted">{filteredLogs.length} entries</span>
         </div>
-        {logs.length === 0 && <p>No audit entries yet.</p>}
+        <div className="form-grid">
+          <label>
+            Search
+            <input value={auditQuery} onChange={(event) => setAuditQuery(event.target.value)} placeholder="Search actor, email, action, or change..." />
+          </label>
+          <label>
+            Action
+            <select value={auditAction} onChange={(event) => setAuditAction(event.target.value)}>
+              <option value="ALL">All actions</option>
+              {actionOptions.map((action) => <option key={action} value={action}>{formatActionLabel(action)}</option>)}
+            </select>
+          </label>
+        </div>
+        {filteredLogs.length === 0 && <p>No audit entries match the current filters.</p>}
         <div className="audit-list">
-          {logs.map((log) => {
+          {filteredLogs.map((log) => {
             const actor = formatActor(log);
             const subject = formatSubject(log);
             const changes = describeChanges(log);
@@ -1498,6 +1935,22 @@ function AuditTrailEnhanced({ logs, profiles }: { logs: AuditLog[]; profiles: Pr
 }
 
 function UsersPageEnhanced({ profiles, inviteForm, setInviteForm, inviteUser, inviteLink, updateRole, resendInvite, deleteUser, currentUserId, canManageRoles }: { profiles: Profile[]; inviteForm: any; setInviteForm: (value: any) => void; inviteUser: () => void; inviteLink: string; updateRole: (userId: number, role: Role) => void; resendInvite: (profile: Profile) => void; deleteUser: (userId: number, userLabel: string) => void; currentUserId: number; canManageRoles: boolean }) {
+  const [userQuery, setUserQuery] = useState("");
+  const [accessFilter, setAccessFilter] = useState("ALL");
+
+  const visibleProfiles = useMemo(() => {
+    return profiles.filter((profile) => {
+      const haystack = `${profile.name || ""} ${profile.email} ${profile.role} ${profile.department || ""}`.toLowerCase();
+      const matchesQuery = !userQuery.trim() || haystack.includes(userQuery.trim().toLowerCase());
+      const matchesAccess =
+        accessFilter === "ALL" ||
+        (accessFilter === "PENDING" && Boolean(profile.inviteExpiresAt)) ||
+        (accessFilter === "ACTIVE" && !profile.inviteExpiresAt);
+
+      return matchesQuery && matchesAccess;
+    });
+  }, [profiles, userQuery, accessFilter]);
+
   return (
     <div className="stack">
       <div className="card stack">
@@ -1512,7 +1965,23 @@ function UsersPageEnhanced({ profiles, inviteForm, setInviteForm, inviteUser, in
         {inviteLink && <p className="message">{inviteLink}</p>}
       </div>
       <div className="stack users-grid">
-        {profiles.map((profile) => (
+        <div className="card stack" style={{ gridColumn: "1 / -1" }}>
+          <div className="form-grid">
+            <label>
+              Search Users
+              <input value={userQuery} onChange={(event) => setUserQuery(event.target.value)} placeholder="Search by name, email, role, or department" />
+            </label>
+            <label>
+              Access State
+              <select value={accessFilter} onChange={(event) => setAccessFilter(event.target.value)}>
+                <option value="ALL">All users</option>
+                <option value="ACTIVE">Active</option>
+                <option value="PENDING">Invite pending</option>
+              </select>
+            </label>
+          </div>
+        </div>
+        {visibleProfiles.map((profile) => (
           <div key={profile.id} className="user-admin-card">
             <div className="user-admin-head">
               <div>
@@ -1551,7 +2020,107 @@ function UsersPageEnhanced({ profiles, inviteForm, setInviteForm, inviteUser, in
             </div>
           </div>
         ))}
+        {visibleProfiles.length === 0 && <div className="card"><p>No users match the current filters.</p></div>}
       </div>
+    </div>
+  );
+}
+
+function FeedbackStudio({ feedback, form, setForm, addFeedback, isLeadOrHr, profiles, selectedFeedbackUserId, onSelectUser, canCreateExternalFeedback, canCreateInternalFeedback }: { feedback: Feedback[]; form: any; setForm: (value: any) => void; addFeedback: () => void; isLeadOrHr: boolean; profiles: Profile[]; selectedFeedbackUserId: number | null; onSelectUser: (userId: number) => void; canCreateExternalFeedback: boolean; canCreateInternalFeedback: boolean }) {
+  const externalFeedback = feedback.filter((item) => item.type === "EXTERNAL");
+  const internalFeedback = feedback.filter((item) => item.type === "INTERNAL");
+  const selectedProfile = profiles.find((profile) => profile.id === selectedFeedbackUserId);
+
+  return (
+    <div className="stack">
+      <section className="feedback-hero">
+        <div>
+          <p className="eyebrow">Review Notes</p>
+          <h1>Feedback Workspace</h1>
+        </div>
+        <div className="feedback-hero-side">
+          <label>
+            Developer
+            <select value={selectedFeedbackUserId ?? ""} onChange={(event) => {
+              const userId = Number(event.target.value);
+              setForm({ ...form, developerId: String(userId) });
+              onSelectUser(userId);
+            }}>
+              {profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name || profile.email}</option>)}
+            </select>
+          </label>
+          {selectedProfile && <div className="feedback-subject-line">{selectedProfile.role}{selectedProfile.department ? ` · ${selectedProfile.department}` : ""}</div>}
+        </div>
+      </section>
+
+      {(canCreateExternalFeedback || canCreateInternalFeedback) && (
+        <section className="feedback-compose">
+          <div className="feedback-compose-head">
+            <div>
+              <h2>Add Feedback</h2>
+            </div>
+          </div>
+          <div className="feedback-compose-grid">
+            <div className="feedback-compose-side">
+              <label>
+                Type
+                <select value={form.type} onChange={(event) => setForm({ ...form, type: event.target.value as FeedbackType })}>
+                  <option>EXTERNAL</option>
+                  {canCreateInternalFeedback && <option>INTERNAL</option>}
+                </select>
+              </label>
+            </div>
+            <label className="feedback-compose-textarea">
+              Feedback
+              <textarea value={form.content} onChange={(event) => setForm({ ...form, content: event.target.value })} placeholder="Write feedback..." />
+            </label>
+          </div>
+          <div className="feedback-compose-actions">
+            <button onClick={addFeedback}>Add Feedback</button>
+          </div>
+        </section>
+      )}
+
+      <section className="feedback-columns">
+        <div className="feedback-panel external">
+          <div className="feedback-panel-head">
+            <div>
+              <p className="eyebrow">Visible To Developer</p>
+              <h2>External Feedback</h2>
+            </div>
+            <span className="feedback-count">{externalFeedback.length}</span>
+          </div>
+          <div className="feedback-list">
+            {externalFeedback.length === 0 && <div className="feedback-empty">No external feedback yet.</div>}
+            {externalFeedback.map((item) => (
+              <article key={item.id} className="feedback-note">
+                <p>{item.content}</p>
+                {item.createdAt && <small>{new Date(item.createdAt).toLocaleString()}</small>}
+              </article>
+            ))}
+          </div>
+        </div>
+        {isLeadOrHr && (
+          <div className="feedback-panel internal">
+            <div className="feedback-panel-head">
+              <div>
+                <p className="eyebrow">Restricted Notes</p>
+                <h2>Internal Feedback</h2>
+              </div>
+              <span className="feedback-count">{internalFeedback.length}</span>
+            </div>
+            <div className="feedback-list">
+              {internalFeedback.length === 0 && <div className="feedback-empty">No internal feedback yet.</div>}
+              {internalFeedback.map((item) => (
+                <article key={item.id} className="feedback-note">
+                  <p>{item.content}</p>
+                  {item.createdAt && <small>{new Date(item.createdAt).toLocaleString()}</small>}
+                </article>
+              ))}
+            </div>
+          </div>
+        )}
+      </section>
     </div>
   );
 }
@@ -1594,6 +2163,121 @@ function NotificationsCenter({ notifications, unread, markRead, markAllRead, ope
             </div>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+function FeedbackDarkStudio({ feedback, form, setForm, addFeedback, isLeadOrHr, profiles, selectedFeedbackUserId, onSelectUser, canCreateExternalFeedback, canCreateInternalFeedback }: { feedback: Feedback[]; form: any; setForm: (value: any) => void; addFeedback: () => void; isLeadOrHr: boolean; profiles: Profile[]; selectedFeedbackUserId: number | null; onSelectUser: (userId: number) => void; canCreateExternalFeedback: boolean; canCreateInternalFeedback: boolean }) {
+  const selectedProfile = profiles.find((profile) => profile.id === selectedFeedbackUserId);
+  const externalFeedback = feedback.filter((item) => item.type === "EXTERNAL");
+  const internalFeedback = feedback.filter((item) => item.type === "INTERNAL");
+  const severity = form.severity || "Medium";
+  const charCount = String(form.content || "").length;
+
+  const setFeedbackType = (type: FeedbackType) => {
+    if (type === "INTERNAL" && !canCreateInternalFeedback) {
+      return;
+    }
+
+    setForm({ ...form, type });
+  };
+
+  return (
+    <div className="feedback-dark-workspace">
+      <section className="feedback-dark-top">
+        <div>
+          <p className="eyebrow">Suggestions</p>
+          <h2>Feedback</h2>
+        </div>
+        {isLeadOrHr && (
+          <label className="feedback-dark-developer">
+            Developer
+            <select value={selectedFeedbackUserId ?? ""} onChange={(event) => {
+              const userId = Number(event.target.value);
+              setForm({ ...form, developerId: String(userId) });
+              onSelectUser(userId);
+            }}>
+              {profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name || profile.email}</option>)}
+            </select>
+          </label>
+        )}
+      </section>
+
+      {(canCreateExternalFeedback || canCreateInternalFeedback) && (
+        <section className="feedback-dark-compose">
+          <div className="feedback-dark-compose-head">
+            <div>
+              <h3>Add feedback</h3>
+              {selectedProfile && <p>{selectedProfile.name || selectedProfile.email}</p>}
+            </div>
+            <div className="feedback-type-tabs">
+              <button type="button" className={form.type === "EXTERNAL" ? "active" : ""} onClick={() => setFeedbackType("EXTERNAL")}>External</button>
+              {canCreateInternalFeedback && <button type="button" className={form.type === "INTERNAL" ? "active" : ""} onClick={() => setFeedbackType("INTERNAL")}>Internal</button>}
+            </div>
+          </div>
+
+          <div className="feedback-dark-compose-body">
+            <aside className="feedback-dark-controls">
+              <div>
+                <span className="feedback-dark-label">Severity</span>
+                <div className="severity-buttons">
+                  {["Low", "Medium", "High"].map((item) => (
+                    <button key={item} type="button" className={severity === item ? "active" : ""} onClick={() => setForm({ ...form, severity: item })}>{item}</button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <span className="feedback-dark-label">Visibility</span>
+                <label className="feedback-radio"><input type="radio" checked={form.type === "EXTERNAL"} onChange={() => setFeedbackType("EXTERNAL")} /> Visible to developer</label>
+                {canCreateInternalFeedback && <label className="feedback-radio"><input type="radio" checked={form.type === "INTERNAL"} onChange={() => setFeedbackType("INTERNAL")} /> Restricted notes</label>}
+              </div>
+              <p className="feedback-visibility-note">{form.type === "INTERNAL" ? "Restricted to HR and Team Lead" : "Visible to developer"}</p>
+            </aside>
+
+            <div className="feedback-dark-entry">
+              <label>
+                <span className="feedback-dark-label">Feedback</span>
+                <textarea maxLength={500} value={form.content} placeholder="Write your feedback here..." onChange={(event) => setForm({ ...form, content: event.target.value })} />
+              </label>
+              <div className="feedback-dark-footer">
+                <span>{charCount} / 500</span>
+                <button onClick={addFeedback}>Submit feedback</button>
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
+
+      <div className="feedback-dark-columns">
+        <section className="feedback-dark-panel external">
+          <header>
+            <div>
+              <p className="eyebrow">Visible to Developer</p>
+              <h3>External Feedback</h3>
+            </div>
+            <span>{externalFeedback.length}</span>
+          </header>
+          <div className="feedback-dark-notes">
+            {externalFeedback.length === 0 && <div className="feedback-dark-empty"><strong>□</strong>No external feedback yet</div>}
+            {externalFeedback.map((item) => <article key={item.id} className="feedback-dark-note"><p>{item.content}</p><span>{item.createdAt?.slice(0, 10) || "Recent"}</span></article>)}
+          </div>
+        </section>
+        {isLeadOrHr && (
+          <section className="feedback-dark-panel internal">
+            <header>
+              <div>
+                <p className="eyebrow">Restricted Notes</p>
+                <h3>Internal Feedback</h3>
+              </div>
+              <span>{internalFeedback.length}</span>
+            </header>
+            <div className="feedback-dark-notes">
+              {internalFeedback.length === 0 && <div className="feedback-dark-empty"><strong>□</strong>No internal feedback yet</div>}
+              {internalFeedback.map((item) => <article key={item.id} className="feedback-dark-note"><p>{item.content}</p><span>{item.createdAt?.slice(0, 10) || "Recent"}</span></article>)}
+            </div>
+          </section>
+        )}
       </div>
     </div>
   );
